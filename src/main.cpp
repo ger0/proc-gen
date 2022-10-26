@@ -1,6 +1,6 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
+#include <glm/glm.hpp> 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -20,10 +20,18 @@ constexpr float verts[] = {
    1.f, 1.f, 0.f
 };
 
+glm::vec3 cameraPos     = glm::vec3(0.f, 0.f, 3.f);
+glm::vec3 cameraTarget  = glm::vec3(0.f, 0.f, 0.f);
+glm::vec3 cameraDir     = glm::normalize(cameraPos - cameraTarget);
+
+glm::vec3 upVector      = glm::vec3(0.f, 1.f, 0.f);
+glm::vec3 cameraRight   = glm::normalize(glm::cross(upVector, cameraDir));
+glm::vec3 cameraUp      = glm::cross(cameraRight, cameraDir);
+
 void drawScene(GLFWwindow *window) {
    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
    sp->use();
-   
+
    glm::mat4 M = glm::mat4(1.f);
    glm::mat4 V = glm::lookAt(
          glm::vec3(0.f, 0.f, -1.f),
@@ -39,12 +47,7 @@ void drawScene(GLFWwindow *window) {
    glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
 
    glBindVertexArray(vao);
-   glVertexAttribPointer(sp->a("vertex"), 3, GL_FLOAT, GL_FALSE, 0, 0);
-   glEnableVertexAttribArray(sp->a("vertex"));
-   glBindVertexBuffer(sp->a("vertex"), vbo, 0, 3* sizeof(float));
-
-   //glDrawArrays(GL_TRIANGLES, 0, 0);
-   glDrawElements(GL_TRIANGLES, 9, GL_FLOAT, 0);
+   glDrawArrays(GL_TRIANGLES, 0, 3);
 
    glfwSwapBuffers(window);
 }
@@ -76,8 +79,10 @@ void initProgram(GLFWwindow *window) {
 
    glGenBuffers(1, &vbo);
    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-   glBufferData(GL_ARRAY_BUFFER, 9 * sizeof(float), verts, GL_STATIC_DRAW);
+   glBufferData(GL_ARRAY_BUFFER, 3 * 3 * sizeof(float), verts, GL_STATIC_DRAW);
 
+   glVertexAttribPointer(sp->a("vertex"), 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), 0);
+   glEnableVertexAttribArray(sp->a("vertex"));
 }
 
 void exitFail(const char *message) {
@@ -92,7 +97,9 @@ int main() {
    if (!glfwInit())  exitFail("Cannot initialise GLFW.");
 
    window = glfwCreateWindow(800, 600, "gltry", NULL, NULL);
-   if (!window)   exitFail("Cannot create window.");
+   if (!window) {
+      exitFail("Cannot create window.");
+   }
 
    glfwMakeContextCurrent(window);
    glfwSwapInterval(1);
