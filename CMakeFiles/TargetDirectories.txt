@@ -1,3 +1,0 @@
-/home/gero/gltry/CMakeFiles/gltry.dir
-/home/gero/gltry/CMakeFiles/edit_cache.dir
-/home/gero/gltry/CMakeFiles/rebuild_cache.dir

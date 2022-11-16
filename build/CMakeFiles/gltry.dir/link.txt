@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/gltry.dir/src/main.cpp.o -o gltry  /usr/lib/libglfw.so.3.3 /usr/lib/libGLEW.so -lGL 
