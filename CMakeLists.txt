@@ -12,7 +12,7 @@ set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 
-add_executable(gltry src/main.cpp src/shaderprogram.cpp)
+add_executable(gltry src/main.cpp src/shaderprogram.cpp src/SimplexNoise/SimplexNoise.cpp src/lodepng/lodepng.cpp)
 target_link_libraries(gltry glfw)
 target_link_libraries(gltry GLEW::GLEW)
 target_link_libraries(gltry GL) 
