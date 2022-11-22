@@ -1,4 +1,4 @@
-#include "SimplexNoise/src/SimplexNoise.h"
+#include "SimplexNoise/SimplexNoise.h"
 #include "lodepng/lodepng.h"
 #include <vector>
 
@@ -16,10 +16,11 @@ int main() {
             val += 1.f;
             val *= 128;
             picture[x + y * WIDTH] = val;
-            //printf("%f ", val);
+            // printf("%f ", val);
         }
-        //printf("\n");
+        // printf("\n");
     }
-    lodepng_encode_file("noise.png", picture.data(), WIDTH, HEIGHT, LCT_GREY, 8);
+    lodepng_encode_file("noise.png", picture.data(), WIDTH, HEIGHT, LCT_GREY,
+                        8);
     return 0;
 }

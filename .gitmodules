@@ -1,0 +1,6 @@
+[submodule "submodules/SimplexNoise"]
+	path = submodules/SimplexNoise
+	url = https://github.com/SRombauts/SimplexNoise.git
+[submodule "submodules/lodepng"]
+	path = submodules/lodepng
+	url = https://github.com/lvandeve/lodepng.git
