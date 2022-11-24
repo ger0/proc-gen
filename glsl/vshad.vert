@@ -1,13 +1,15 @@
 #version 330
-uniform mat4 P;
-uniform mat4 V;
-uniform mat4 M;
+layout (location = 0)in vec3 vertex;
+layout (location = 1)in vec3 normal;
 
-in vec3 vertex;
+uniform mat4 P, V, M;
 
-out   vec3 iColor;
+varying vec3 iNormal;
+varying vec3 vertPos;
 
 void main() {
-    gl_Position = P * V * M * vec4(vertex, 1.f);
-    iColor = vec3(1.f, 1.f, 1.f);
+    gl_Position = P * V * vec4(vertex, 1.0);
+    vec4 vertPos4 = V * vec4(vertex, 1.0);
+    vertPos = vec3(vertPos4) / vertPos4.w;
+    iNormal = vec3(M * vec4(normal, 0.0));
 }
