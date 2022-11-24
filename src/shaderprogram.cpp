@@ -80,6 +80,7 @@ ShaderProgram::~ShaderProgram() {
     glDeleteShader(fragmentShader);
 
     glDeleteProgram(shaderProgram);
+    printf("Shader program deleted \n");
 }
 
 void ShaderProgram::use() {
