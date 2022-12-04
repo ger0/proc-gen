@@ -13,8 +13,8 @@
 #include "lodepng/lodepng.h"
 #include "shaderprogram.hpp"
 
+using uint = unsigned;
 using byte = unsigned char;
-using uint = uint;
 
 // unique_ptr alias
 template<typename... T>
@@ -225,6 +225,7 @@ int printFail(const char *message) {
 	fprintf(stderr, message, "\n");
 	return -1;
 }
+
 inline float& noiseAt(Position<uint> pos) {
 	return noise[pos.x + pos.y * NOISE_W];
 }
@@ -233,17 +234,16 @@ inline float& noiseAt(Position<uint> pos) {
 // checking noise values around the vertex
 void genNormal(uint offset, Position<uint> pos) {
 	// ignore vertices on the edge of the map
-	if (!(pos.x > 0 && pos.y > 0 
-				&& pos.x < MAP_W && pos.y < MAP_H)) {
-		verts[offset + 1] = glm::vec3(0.f, -1.f, 0.f);
-		return;
-	} 
+    if (!(pos.x > 0 && pos.y > 0 && pos.x < MAP_W && pos.y < MAP_H)) {
+        verts[offset + 1] = glm::vec3(0.f, -1.f, 0.f);
+        return;
+    }
 
 	// derivatives to figure out normal by using cross product
-    glm::vec3 dx(
-        2.f, noiseAt(pos.offset(1, 0)) - noiseAt(pos.offset(-1, 0)), 0.f);
-    glm::vec3 dz(
-        0.f, noiseAt(pos.offset(0, -1)) - noiseAt(pos.offset(0, 1)), 2.f);
+	glm::vec3 dx(
+		2.f, noiseAt(pos.offset(1, 0)) - noiseAt(pos.offset(-1, 0)), 0.f);
+	glm::vec3 dz(
+		0.f, noiseAt(pos.offset(0, -1)) - noiseAt(pos.offset(0, 1)), 2.f);
 
     glm::vec3 norm;
 	norm = glm::cross(dz, dx);
@@ -260,7 +260,7 @@ void genMesh() {
 		/* vertice offsets to create 2 polygons for one quad
  	 	 * (0,0)---(1,0)
  	 	 *  |     /  |
- 	 	 *  | 	 /   |
+ 	 	 *  |    /   |
  	 	 *  |   /    |
  	 	 * (0,1)---(1,1)
  	 	 */
@@ -301,13 +301,14 @@ void genWavesMap() {
 }
 
 void genSimplexMap() {
-	SimplexNoise noiseGen(4.f / MAP_W, 2.f, 1.f, 0.5f);
+	SimplexNoise noiseGen(3.f / MAP_W, 1.f, 2.f, 0.5f);
     std::vector<byte> picture(NOISE_W * NOISE_H);
 	// noise generation
 	for (uint y = 0; y <= MAP_H; y++) {
     	for (uint x = 0; x <= MAP_W; x++) {
-    		auto val = noiseGen.fractal(5, x, y) * 0.5f + 0.5f;
+    		auto val = noiseGen.fractal(4, x, y) * 0.5f + 0.5f;
 			noiseAt({x, y}) = 32.f * val;
+
             picture[x + y * NOISE_W] = 128 * val;
 		}
 	}
