@@ -67,10 +67,11 @@ struct Position {
 	}
 
 	template<typename Y>
-	Position<T> offset(Y off_x, Y off_y) {
+	Position<T> offset(Y off_x, Y off_y, Y off_z) {
 		Position<T> npos;
 		npos.x = x + T(off_x);
 		npos.y = y + T(off_y);
+		npos.z = z + T(off_z);
 		return npos;
 	}
 };
@@ -86,27 +87,29 @@ GLuint vbo;
 float deltaTime = 0.f;
 float lastFrame = 0.f;
 
-float yaw = -90.f;
-float pitch = 0.f;
-
 // mouse position
 Position<float> mouseLast;
 
-array<float, NOISE_W * NOISE_W * NOISE_H> noise3D;
+array<float, NOISE_W * NOISE_W * NOISE_H> noise;
 
 // vertex + normal data (6 + 6)
 // {pos{x, y, z}, norm{x, y, z}} for every single vertex
 vector<glm::vec3> verts3D;
 
-const float cameraSpeed = 0.05f;
+struct Camera {
+	glm::vec3 pos = glm::vec3(0.f, 0.f, 3.f);
+	glm::vec3 target = glm::vec3(0.f, 0.f, 0.f);
+	glm::vec3 dir = glm::normalize(pos - target);
 
-glm::vec3 cameraPos = glm::vec3(0.f, 0.f, 3.f);
-glm::vec3 cameraTarget = glm::vec3(0.f, 0.f, 0.f);
-glm::vec3 cameraDir = glm::normalize(cameraPos - cameraTarget);
+	const float speed = 0.05f;
 
-glm::vec3 upVector = glm::vec3(0.f, 1.f, 0.f);
-glm::vec3 cameraRight = glm::normalize(glm::cross(upVector, cameraDir));
-glm::vec3 cameraUp = glm::cross(cameraDir, cameraRight);
+	glm::vec3 right = glm::normalize(glm::cross(glm::vec3(0,1,0), dir));
+	glm::vec3 up = glm::cross(dir, right);
+
+	float yaw = -90.f;
+	float pitch = 0.f;
+} camera;
+
 
 void drawScene(ShaderProgram* sp, GLFWwindow *window) {
 	// time
@@ -118,7 +121,7 @@ void drawScene(ShaderProgram* sp, GLFWwindow *window) {
 	sp->use();
 
 	glm::mat4 M = glm::mat4(1.f);
-	glm::mat4 V = glm::lookAt(cameraPos, cameraPos + cameraTarget, cameraUp);
+	glm::mat4 V = glm::lookAt(camera.pos, camera.pos + camera.target, camera.up);
 	glm::mat4 P = glm::perspective(glm::radians(FOV), ASPECT_RATIO, Z_NEAR, Z_FAR);
 
 	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
@@ -146,42 +149,37 @@ void mouseCallback(GLFWwindow *window, double xpos, double ypos) {
 	xoffset *= sensitivity;
 	yoffset *= sensitivity;
 
-	yaw += xoffset;
-	pitch += yoffset;
-	if (pitch > 89.f) {
-		pitch = 89.f;
+	camera.yaw += xoffset;
+	camera.pitch += yoffset;
+	if (camera.pitch > 89.f) {
+		camera.pitch = 89.f;
 	}
-	if (pitch < -89.f) {
-		pitch = -89.f;
+	if (camera.pitch < -89.f) {
+		camera.pitch = -89.f;
 	}
 	glm::vec3 direction;
-	direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-	direction.y = sin(glm::radians(pitch));
-	direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-	cameraTarget = glm::normalize(direction);
-
-/* #ifdef DEBUG
-	printf("CameraPointing: %f %f %f\n", 
-			cameraTarget.x, cameraTarget.y, cameraTarget.z);
-#endif */
+	direction.x = cos(glm::radians(camera.yaw)) * cos(glm::radians(camera.pitch));
+	direction.y = sin(glm::radians(camera.pitch));
+	direction.z = sin(glm::radians(camera.yaw)) * cos(glm::radians(camera.pitch));
+	camera.target = glm::normalize(direction);
 }
 
 void keyCallback(GLFWwindow *window, int key, int scancode, int act, int mod) {
-	const float cameraSpeed = 10.f * deltaTime;
+	const float speed = 10.f * deltaTime;
 
 	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-		cameraPos += cameraSpeed * cameraTarget;
+		camera.pos += speed * camera.target;
 	if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-		cameraPos -= cameraSpeed * cameraTarget;
+		camera.pos -= speed * camera.target;
 	if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-		cameraPos -= 
-			glm::normalize(glm::cross(cameraTarget, cameraUp)) * cameraSpeed;
+		camera.pos -= 
+			glm::normalize(glm::cross(camera.target, camera.up)) * speed;
 	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-    	cameraPos += 
-    		glm::normalize(glm::cross(cameraTarget, cameraUp)) * cameraSpeed;
+    	camera.pos += 
+    		glm::normalize(glm::cross(camera.target, camera.up)) * speed;
 #ifdef DEBUG
 	printf("Pos: x: %f, y: %f, z: %f\n", 
-			cameraPos.x, cameraPos.y, cameraPos.z);
+			camera.pos.x, camera.pos.y, camera.pos.z);
 #endif
 }
 
@@ -229,8 +227,6 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 
 	glGenBuffers(1, &vbo);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	// glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float) * 3,
- //        	(void *)verts.data(), GL_STATIC_DRAW);
 	glBufferData(GL_ARRAY_BUFFER, verts3D.size() * sizeof(glm::vec3),
          	(void*)verts3D.data(), GL_STATIC_DRAW);
 
@@ -273,11 +269,11 @@ int printFail(const char *message) {
 }*/
 
 // converts Position<uint> into a reference to an element in the noise array
-float inline& noise3DAt(Position<uint> &pos) {
-	return noise3D.at(pos.x + pos.z * NOISE_W + pos.y * (NOISE_W * NOISE_W));
+inline float& noiseAtPos(Position<uint> pos) {
+	return noise.at(pos.x + pos.z * NOISE_W + pos.y * (NOISE_W * NOISE_W));
 }
 
-void genMesh3D() {
+void genMesh() {
 	constexpr uint step = 12; // 6 vertices + 6 normals
 	for (uint i = 0; i < (MAP_W * MAP_W * MAP_H) * step; i += step) {
 		uint frac = i / step;
@@ -298,7 +294,7 @@ void genMesh3D() {
 				.y = pos.y + ((offset & 0b010) >> 1),
 				.z = pos.z + ((offset & 0b100) >> 2),
 			};
-			float noiseVal = noise3DAt(nPos);
+			float noiseVal = noiseAtPos(nPos);
 			constexpr float threshold = 0.f;
 			if (noiseVal > threshold) {
 				cube |= (1 << offset);
@@ -318,13 +314,33 @@ void genMesh3D() {
 			auto verts = march_cubes::EdgeVertexIndices.at(edge);
 
 			glm::vec3 vertex;
+			Position<uint> offset = {
+				.x = ((verts[0] & 0b001) >> 0) + ((verts[1] & 0b001) >> 0),
+				.y = ((verts[0] & 0b010) >> 1) + ((verts[1] & 0b010) >> 1),
+				.z = ((verts[0] & 0b100) >> 2) + ((verts[1] & 0b100) >> 2)
+			};
 
-			vertex.x = pos.x + (((verts[0] & 0b001) >> 0) + ((verts[1] & 0b001) >> 0)) / 2.f;
-			vertex.y = pos.y + (((verts[0] & 0b010) >> 1) + ((verts[1] & 0b010) >> 1)) / 2.f;
-			vertex.z = pos.z + (((verts[0] & 0b100) >> 2) + ((verts[1] & 0b100) >> 2)) / 2.f;
+			vertex.x = pos.x + offset.x / 2.f;
+			vertex.y = pos.y + offset.y / 2.f;
+			vertex.z = pos.z + offset.z / 2.f;
 
 			verts3D.push_back(vertex);
-			verts3D.push_back(glm::vec3(0,1,0));
+
+			// normal calculation - 6 samples
+			// ignore edges of the map
+			auto vpos = pos + offset;
+			if (!(vpos.x > 0 && vpos.y > 0 && vpos.z > 0 &&
+						vpos.x < MAP_W && vpos.y < MAP_H && vpos.z < MAP_W)) {
+				verts3D.push_back(glm::vec3(0,-1,0));
+			} else {
+				// derivatives to figure out normal by using cross product
+				// vpos - position of THE VOXEL in world space based on the noise
+				float dx = noiseAtPos(vpos.offset(1, 0, 0)) - noiseAtPos(vpos.offset(-1, 0, 0));
+				float dy = noiseAtPos(vpos.offset(0,-1, 0)) - noiseAtPos(vpos.offset( 0, 1, 0));
+				float dz = noiseAtPos(vpos.offset(0, 0, 1)) - noiseAtPos(vpos.offset( 0, 0,-1));
+				glm::vec3 normal = glm::normalize(glm::vec3(dx, dy, dz));
+				verts3D.push_back(normal);
+			}
 		}
 	}
 }
@@ -350,15 +366,15 @@ void fill3DNoise() {
 			for (uint x = 0; x <= MAP_W; x++) {
 				auto val = noiseGen.fractal(octaves, x, y, z);
 				auto pos = Position<uint>{x, y, z};
-				noise3DAt(pos) = val;
+				noiseAtPos(pos) = val;
 			}
 		}
 #ifdef DEBUG
 		// outputnoise directory must exist
 		constexpr uint size = NOISE_W * NOISE_W;
 		array<float, size> noiseSlice;
-		std::copy(noise3D.begin() + size * y,
-				noise3D.begin() + size * (y + 1),
+		std::copy(noise.begin() + size * y,
+				noise.begin() + size * (y + 1),
 				noiseSlice.begin());
 		char str[21 + 48 / 8];
 		sprintf(str, "outputnoise/noise-%u.png", y);
@@ -367,23 +383,24 @@ void fill3DNoise() {
 	}
 }
 
+// debugging map
 void fillNoiseTest() {
 	for (uint y = 0; y < NOISE_H; y++) {
 		array<byte, NOISE_W * NOISE_W> picture;
 		for (uint z = 0; z <= MAP_W; z++) {
 			for (uint x = 0; x <= MAP_W; x++) {
 				auto pos = Position<uint>{x, y, z};
-				noise3DAt(pos) = -1.f;
+				noiseAtPos(pos) = -1.f;
 			}
 		}
 		auto pos = Position<uint>{0, 0, 0};
-		noise3DAt(pos) = -1.f;
+		noiseAtPos(pos) = -1.f;
 #ifdef DEBUG
 		// outputnoise directory must exist
 		constexpr uint size = NOISE_W * NOISE_W;
 		array<float, size> noiseSlice;
-		std::copy(noise3D.begin() + size * y,
-				noise3D.begin() + size * (y + 1),
+		std::copy(noise.begin() + size * y,
+				noise.begin() + size * (y + 1),
 				noiseSlice.begin());
 		char str[21 + 48 / 8];
 		sprintf(str, "outputnoise/noise-%u.png", y);
@@ -394,8 +411,7 @@ void fillNoiseTest() {
 
 int main() {
 	fill3DNoise();
-	//fillNoiseTest();
-	genMesh3D();
+	genMesh();
 
 	glfwSetErrorCallback(errCallback);
 	if (!glfwInit()) {
