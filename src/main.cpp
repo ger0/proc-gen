@@ -24,6 +24,7 @@ using uint = unsigned;
 template<typename... T>
 using Uniq_Ptr = std::unique_ptr<T...>;
 
+// temporary vector to be removed
 using std::array, std::vector;
 
 constexpr const char* 	WINDOW_TITLE = "GLTRY";
@@ -31,18 +32,18 @@ constexpr uint 		WINDOW_W = 800;
 constexpr uint 		WINDOW_H = 600;
 
 constexpr uint MAP_W = 32;
-constexpr uint MAP_H = 32;
+constexpr uint MAP_H = 16;
 
 constexpr float ASPECT_RATIO = float(WINDOW_W) / WINDOW_H;
 constexpr float FOV = 90.f;
 
 // clipping
 constexpr float Z_NEAR = 0.1f;
-constexpr float Z_FAR = MAP_W;
+constexpr float Z_FAR = 256.f;
 
 constexpr uint NOISE_W = MAP_W + 1;
 constexpr uint NOISE_H = MAP_H + 1;
-constexpr float noiseScale = 32.f;
+constexpr float noiseScale = 6.f;
 
 template<typename T>
 struct Position {
@@ -91,13 +92,10 @@ float pitch = 0.f;
 // mouse position
 Position<float> mouseLast;
 
-array<float, NOISE_W * NOISE_H> noise;
-
-array<float, NOISE_W * NOISE_H * 32> noise3D;
+array<float, NOISE_W * NOISE_W * NOISE_H> noise3D;
 
 // vertex + normal data (6 + 6)
 // {pos{x, y, z}, norm{x, y, z}} for every single vertex
-array<glm::vec3, (6 + 6) * MAP_W * MAP_H> verts;
 vector<glm::vec3> verts3D;
 
 const float cameraSpeed = 0.05f;
@@ -128,7 +126,7 @@ void drawScene(ShaderProgram* sp, GLFWwindow *window) {
 	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
 
 	glBindVertexArray(vao);
-	glDrawArrays(GL_TRIANGLES, 0, (verts.size() / 2) * 3 );
+	glDrawArrays(GL_TRIANGLES, 0, (verts3D.size() / 2) * 3 );
 
 	glfwSwapBuffers(window);
 }
@@ -161,14 +159,15 @@ void mouseCallback(GLFWwindow *window, double xpos, double ypos) {
 	direction.y = sin(glm::radians(pitch));
 	direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
 	cameraTarget = glm::normalize(direction);
-#ifdef DEBUG
+
+/* #ifdef DEBUG
 	printf("CameraPointing: %f %f %f\n", 
 			cameraTarget.x, cameraTarget.y, cameraTarget.z);
-#endif
+#endif */
 }
 
 void keyCallback(GLFWwindow *window, int key, int scancode, int act, int mod) {
-	const float cameraSpeed = 100.f * deltaTime;
+	const float cameraSpeed = 10.f * deltaTime;
 
 	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
 		cameraPos += cameraSpeed * cameraTarget;
@@ -210,10 +209,10 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
 
-	glEnable(GL_CULL_FACE);
-	glCullFace(GL_BACK);
+	// glEnable(GL_CULL_FACE);
+	// glCullFace(GL_BACK);
 
-	//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	// glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glClearColor(0, 0, 0, 1.f);
 
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -230,8 +229,10 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 
 	glGenBuffers(1, &vbo);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float) * 3,
-        	(void *)verts.data(), GL_STATIC_DRAW);
+	// glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float) * 3,
+ //        	(void *)verts.data(), GL_STATIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, verts3D.size() * sizeof(glm::vec3),
+         	(void*)verts3D.data(), GL_STATIC_DRAW);
 
 	uint count = 3;
 	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
@@ -250,14 +251,9 @@ int printFail(const char *message) {
 	return -1;
 }
 
-inline float& noiseAt(Position<uint> pos) {
-	// bounds checking
-	return noise.at(pos.x + pos.y * NOISE_W);
-}
-
-// generates a normal vector for a single vertex by 
+// normal generation for 2D heightmap (to be removed)
 // checking noise values around the vertex
-void genNormal(uint offset, Position<uint> pos) {
+/* void genNormal(uint offset, Position<uint> pos) {
 	// ignore vertices on the edge of the map
 	if (!(pos.x > 0 && pos.y > 0 && pos.x < (MAP_W) && pos.y < (MAP_H))) {
 		verts.at(offset + 1) = glm::vec3(0.f, -1.f, 0.f);
@@ -274,49 +270,17 @@ void genNormal(uint offset, Position<uint> pos) {
 	norm = glm::cross(dz, dx);
 	norm = glm::normalize(norm);
 	verts.at(offset + 1) = norm;
-}
+}*/
 
-// generates mesh with normals out of a noise into verts vector
-void genMesh() {
-	constexpr uint step = 12; // 6 vertices + 6 normals
-	for (uint i = 0; i < (MAP_H * MAP_W - step) * step; i+= step) {
-		uint frac = i / step;
-		Position<uint> pos = {frac % MAP_W, frac / MAP_W};
-		/* vertice offsets to create 2 polygons for one quad
- 	 	 * (0,0)---(1,0)
- 	 	 *  |     /  |
- 	 	 *  |    /   |
- 	 	 *  |   /    |
- 	 	 * (0,1)---(1,1)
- 	 	 */
-		using t = glm::vec2; 
-		auto offsets = {
-			t(0,0), t(0,1), t(1,0), // first triangle
-			t(1,0), t(0,1), t(1,1)  // second triangle
-		};
-		uint idx = 0;
-		for (auto offset : offsets) {
-			glm::vec3 vert;
-			vert.x = pos.x + offset.x;
-			vert.y = noiseAt(pos + offset);
-			// here the 3D Z coord is mapped to the Y coord on the 2D noise plane
-			// the Y coord is the noise value at (X, Z)
-			vert.z = pos.y + offset.y;
-			verts.at(i + idx) = vert;
-			idx += 2;
-			genNormal(i + idx, pos);
-		}
-	}
-}
-
-float inline noise3DAt(Position<uint> &pos) {
+// converts Position<uint> into a reference to an element in the noise array
+float inline& noise3DAt(Position<uint> &pos) {
 	return noise3D.at(pos.x + pos.z * NOISE_W + pos.y * (NOISE_W * NOISE_W));
 }
 
 void genMesh3D() {
 	constexpr uint step = 12; // 6 vertices + 6 normals
-	for (uint i = 0; i < (MAP_W * MAP_W * MAP_H - step) * step; i += step) {
-		uint frac = 1 / step;
+	for (uint i = 0; i < (MAP_W * MAP_W * MAP_H) * step; i += step) {
+		uint frac = i / step;
 		auto xz = frac % (MAP_W * MAP_W); // index on the <x,z> plane
 		Position<uint> pos = {
 			.x = xz % MAP_W,
@@ -331,11 +295,11 @@ void genMesh3D() {
 		for (byte offset = 0b000; offset <= 0b111; offset++) {
 			Position<uint> nPos = {
 				.x = pos.x + (offset & 0b001),
-				.y = pos.y + (offset & 0b010),
-				.z = pos.z + (offset & 0b100),
+				.y = pos.y + ((offset & 0b010) >> 1),
+				.z = pos.z + ((offset & 0b100) >> 2),
 			};
 			float noiseVal = noise3DAt(nPos);
-			constexpr float threshold = 1.f;
+			constexpr float threshold = 0.f;
 			if (noiseVal > threshold) {
 				cube |= (1 << offset);
 			}
@@ -345,93 +309,81 @@ void genMesh3D() {
 		auto edges = march_cubes::TriangleTable.at(cube);
 
 		// array of vertices for a triangle
-		array<Vertex, 3> triangle;
-		uint edgeCount = 0;
 		for (uint& edge : edges) {
+			// check if theres no more edges left
+			if (edge == march_cubes::x) {
+				break;
+			}
+
 			auto verts = march_cubes::EdgeVertexIndices.at(edge);
 
 			glm::vec3 vertex;
 
-			vertex.x = pos.x + (verts[0] >> 0) + (verts[1] >> 0) / 2.f;
-			vertex.y = pos.y + (verts[0] >> 1) + (verts[1] >> 1) / 2.f;
-			vertex.z = pos.z + (verts[0] >> 2) + (verts[1] >> 2) / 2.f;
-
-			if (edgeCount > 3) {
-				edgeCount = 0;
-			}
-
-			triangle[edgeCount] = {
-				.position = vertex, 
-				.normal = glm::vec3(0, 1, 0)
-			};
+			vertex.x = pos.x + (((verts[0] & 0b001) >> 0) + ((verts[1] & 0b001) >> 0)) / 2.f;
+			vertex.y = pos.y + (((verts[0] & 0b010) >> 1) + ((verts[1] & 0b010) >> 1)) / 2.f;
+			vertex.z = pos.z + (((verts[0] & 0b100) >> 2) + ((verts[1] & 0b100) >> 2)) / 2.f;
 
 			verts3D.push_back(vertex);
 			verts3D.push_back(glm::vec3(0,1,0));
-
-			edgeCount++; 
 		}
 	}
 }
 
-void saveNoisePNG(const char* fname, array<float, NOISE_W * NOISE_H>& noise) {
-	array<byte, NOISE_W * NOISE_H> picture;
+void saveNoisePNG(const char* fname, array<float, NOISE_W * NOISE_W>& noise) {
+	array<byte, NOISE_W * NOISE_W> picture;
 	float max = -99999.f;
 	for (uint i = 0; i < noise.size(); i++) {
 		auto val = noise.at(i) * 128.f / noiseScale;
 		if (val > max) max = val;
 		picture.at(i) = noise.at(i) * 128.f / noiseScale;
 	}
-	printf("MAXXXX: %f\n", max);
 	lodepng_encode_file(fname, picture.data(), 
-			NOISE_W, NOISE_H, LCT_GREY, 8);
+			NOISE_W, NOISE_W, LCT_GREY, 8);
 }
-
-void genWavesMap() {
-	auto val = 0.f;
-	for (uint y = 0; y <= MAP_H; y++) {
-		val += 0.5f;
-		if (y % 32 == 0) val = 0.f;
-		for (uint x = 0; x <= MAP_W; x++) {
-			noiseAt({x, y}) = val;
-		}
-	}
-#ifdef DEBUG
-	saveNoisePNG("waves.png", noise);
-#endif
-}
-
-void genSimplexMap() {
-	SimplexNoise noiseGen(3.f / MAP_W, 1.f, 2.f, 0.5f);
+void fill3DNoise() {
+	SimplexNoise noiseGen(0.1f, 1.f, 2.f, 0.5f);
+	constexpr uint octaves = 9;
 	// noise generation
-	for (uint y = 0; y <= MAP_H; y++) {
-    	for (uint x = 0; x <= MAP_W; x++) {
-			auto val = noiseGen.fractal(4, x, y) + 1.f;
-			noiseAt({x, y}) = noiseScale * val;
-		}
-	}
-#ifdef DEBUG
-	saveNoisePNG("noise.png", noise);
-#endif
-}
-
-void fill3DNoise(array<float, NOISE_W * NOISE_H * 32>& noise) {
-	SimplexNoise noiseGen(3.f / MAP_W, 1.f, 2.f, 0.5f);
-	// noise generation
-	for (uint y = 0; y < 32; y++) {
-		array<byte, NOISE_W * NOISE_H> picture;
-		for (uint z = 0; z <= MAP_H; z++) {
+	for (uint y = 0; y < NOISE_H; y++) {
+		array<byte, NOISE_W * NOISE_W> picture;
+		for (uint z = 0; z <= MAP_W; z++) {
 			for (uint x = 0; x <= MAP_W; x++) {
-				auto val = noiseGen.fractal(4, x, y, z);
-				noise.at(y * (NOISE_W * NOISE_H) + 
-					(x + z * NOISE_W)) = noiseScale * val;
+				auto val = noiseGen.fractal(octaves, x, y, z);
+				auto pos = Position<uint>{x, y, z};
+				noise3DAt(pos) = val;
 			}
 		}
 #ifdef DEBUG
 		// outputnoise directory must exist
-		constexpr uint size = NOISE_W * NOISE_H;
+		constexpr uint size = NOISE_W * NOISE_W;
 		array<float, size> noiseSlice;
-		std::copy(noise.begin() + size * y,
-				noise.begin() + size * (y + 1),
+		std::copy(noise3D.begin() + size * y,
+				noise3D.begin() + size * (y + 1),
+				noiseSlice.begin());
+		char str[21 + 48 / 8];
+		sprintf(str, "outputnoise/noise-%u.png", y);
+		saveNoisePNG(str, noiseSlice);
+#endif
+	}
+}
+
+void fillNoiseTest() {
+	for (uint y = 0; y < NOISE_H; y++) {
+		array<byte, NOISE_W * NOISE_W> picture;
+		for (uint z = 0; z <= MAP_W; z++) {
+			for (uint x = 0; x <= MAP_W; x++) {
+				auto pos = Position<uint>{x, y, z};
+				noise3DAt(pos) = -1.f;
+			}
+		}
+		auto pos = Position<uint>{0, 0, 0};
+		noise3DAt(pos) = -1.f;
+#ifdef DEBUG
+		// outputnoise directory must exist
+		constexpr uint size = NOISE_W * NOISE_W;
+		array<float, size> noiseSlice;
+		std::copy(noise3D.begin() + size * y,
+				noise3D.begin() + size * (y + 1),
 				noiseSlice.begin());
 		char str[21 + 48 / 8];
 		sprintf(str, "outputnoise/noise-%u.png", y);
@@ -441,11 +393,8 @@ void fill3DNoise(array<float, NOISE_W * NOISE_H * 32>& noise) {
 }
 
 int main() {
-	// generate a heightmap and a mesh out of it
-	genSimplexMap();
-	genMesh();
-
-	fill3DNoise(noise3D);
+	fill3DNoise();
+	//fillNoiseTest();
 	genMesh3D();
 
 	glfwSetErrorCallback(errCallback);

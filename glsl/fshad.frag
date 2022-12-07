@@ -9,7 +9,7 @@ uniform int mode;
 const vec3 lightPos = vec3(10, 1, 1);
 const vec3 lightColor = vec3(1.0, 1.0, 0.9);
 const float lightPower = 90.0;
-const vec3 ambientColor = vec3(0.01, 0.1, 0.0);
+const vec3 ambientColor = vec3(0.01, 0.3, 0.0);
 const vec3 diffuseColor = vec3(0.15, 0.43, 0.0);
 const vec3 specColor = vec3(1.0, 1.0, 0.7);
 const float shininess = 8.0;
