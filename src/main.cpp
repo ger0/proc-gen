@@ -41,22 +41,17 @@ constexpr float FOV = 90.f;
 constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = 256.f;
 
-constexpr uint NOISE_W = MAP_W + 1;
-constexpr uint NOISE_H = MAP_H + 1;
+constexpr uint NOISE_W = MAP_W + 2;
+constexpr uint NOISE_H = MAP_H + 2;
+
 constexpr float noiseScale = 6.f;
+constexpr float THRESHOLD = 0.f;
 
 template<typename T>
 struct Position {
 	T x;
 	T y;
 	T z;
-
-	Position<T> operator + (glm::vec2 &offset) {
-		Position<T> npos;
-		npos.x = x + T(offset.x);
-		npos.y = y + T(offset.y);
-		return npos;
-	}
 
 	Position<T> operator + (Position<T> &offset) {
 		Position<T> npos;
@@ -207,10 +202,10 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
 
-	// glEnable(GL_CULL_FACE);
-	// glCullFace(GL_BACK);
+	glEnable(GL_CULL_FACE);
+	glCullFace(GL_BACK);
 
-	// glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glClearColor(0, 0, 0, 1.f);
 
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -247,34 +242,62 @@ int printFail(const char *message) {
 	return -1;
 }
 
-// normal generation for 2D heightmap (to be removed)
-// checking noise values around the vertex
-/* void genNormal(uint offset, Position<uint> pos) {
-	// ignore vertices on the edge of the map
-	if (!(pos.x > 0 && pos.y > 0 && pos.x < (MAP_W) && pos.y < (MAP_H))) {
-		verts.at(offset + 1) = glm::vec3(0.f, -1.f, 0.f);
-		return;
-	}
-
-	// derivatives to figure out normal by using cross product
-	glm::vec3 dx(
-		2.f, noiseAt(pos.offset(1, 0)) - noiseAt(pos.offset(-1, 0)), 0.f);
-	glm::vec3 dz(
-		0.f, noiseAt(pos.offset(0, -1)) - noiseAt(pos.offset(0, 1)), 2.f);
-
-	glm::vec3 norm;
-	norm = glm::cross(dz, dx);
-	norm = glm::normalize(norm);
-	verts.at(offset + 1) = norm;
-}*/
-
 // converts Position<uint> into a reference to an element in the noise array
 inline float& noiseAtPos(Position<uint> pos) {
 	return noise.at(pos.x + pos.z * NOISE_W + pos.y * (NOISE_W * NOISE_W));
 }
+// same as above + interpolation for floats
+inline float noiseAtPos(glm::vec3 pos) {
+	// pivot
+	glm::vec3 p0(uint(pos.x), uint(pos.y), uint(pos.z));
+
+	// shifted vectors for sampling
+	glm::vec3 px = p0 + glm::vec3(1,0,0);
+	glm::vec3 py = p0 + glm::vec3(0,1,0);
+	glm::vec3 pz = p0 + glm::vec3(0,0,1);
+
+	// samples
+	float sx = noiseAtPos(Position<uint>{uint(px.x), uint(px.y), uint(px.z)});
+	float sy = noiseAtPos(Position<uint>{uint(py.x), uint(py.y), uint(py.z)});
+	float sz = noiseAtPos(Position<uint>{uint(pz.x), uint(pz.y), uint(pz.z)});
+
+	// distance 
+	float dx = glm::distance(px, pos);
+	float dy = glm::distance(py, pos);
+	float dz = glm::distance(pz, pos);
+
+	// interpolated
+	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz);
+}
+
+glm::vec3 interpolateVertex(Position<uint> &v1, float val1, Position<uint> &v2, float val2) {
+	// finding a 0 
+	glm::vec3 ret;
+	// coefficient
+	float mu = (THRESHOLD - val1) / (val2 - val1);
+	ret.x = mu*((int)v2.x - (int)v1.x) + v1.x;
+	ret.y = mu*((int)v2.y - (int)v1.y) + v1.y;
+	ret.z = mu*((int)v2.z - (int)v1.z) + v1.z;
+	return ret;
+}
+
+glm::vec3 calculateNormal(glm::vec3 v1) {
+	// normal calculation - 6 samples
+	// ignore edges of the map
+	if (v1.x <= 0.f || v1.y <= 0.f || v1.z <= 0.f ||
+				v1.x >= MAP_W || v1.y >= MAP_H || v1.z >= MAP_W) {
+		return glm::vec3(0,0,0);
+	}
+	// derivatives to figure out normal by using cross product
+	// v1 - position of THE VOXEL in world space based on the noise
+	float dx = noiseAtPos(v1 + glm::vec3(1, 0, 0)) - noiseAtPos(v1 + glm::vec3(-1, 0, 0));
+	float dy = noiseAtPos(v1 + glm::vec3(0,-1, 0)) - noiseAtPos(v1 + glm::vec3( 0, 1, 0));
+	float dz = noiseAtPos(v1 + glm::vec3(0, 0, 1)) - noiseAtPos(v1 + glm::vec3( 0, 0,-1));
+	return -glm::normalize(glm::vec3(dx, dy, dz));
+}
 
 void genMesh() {
-	constexpr uint step = 12; // 6 vertices + 6 normals
+	constexpr uint step = 12; // 6 vertices + 6 normals // will be used for an array later on
 	for (uint i = 0; i < (MAP_W * MAP_W * MAP_H) * step; i += step) {
 		uint frac = i / step;
 		auto xz = frac % (MAP_W * MAP_W); // index on the <x,z> plane
@@ -283,7 +306,6 @@ void genMesh() {
 			.y = frac / (MAP_W * MAP_W),
 			.z = xz / MAP_W
 		};
-		using P = Position<uint>;
 
 		// cube in binary: (v7, v6, v5, v4, v3, v2, v1, v0)
 		byte cube = 0x0;
@@ -295,12 +317,12 @@ void genMesh() {
 				.z = pos.z + ((offset & 0b100) >> 2),
 			};
 			float noiseVal = noiseAtPos(nPos);
-			constexpr float threshold = 0.f;
-			if (noiseVal > threshold) {
+			if (noiseVal > THRESHOLD) {
 				cube |= (1 << offset);
 			}
 		}
 		auto mask = march_cubes::EdgeMasks.at(cube);
+
 		// array of triplets of the cube edges, each triplet = 1 triangle
 		auto edges = march_cubes::TriangleTable.at(cube);
 
@@ -313,34 +335,24 @@ void genMesh() {
 
 			auto verts = march_cubes::EdgeVertexIndices.at(edge);
 
-			glm::vec3 vertex;
-			Position<uint> offset = {
-				.x = ((verts[0] & 0b001) >> 0) + ((verts[1] & 0b001) >> 0),
-				.y = ((verts[0] & 0b010) >> 1) + ((verts[1] & 0b010) >> 1),
-				.z = ((verts[0] & 0b100) >> 2) + ((verts[1] & 0b100) >> 2)
+			// position of the first vertex on the edge
+			auto v1 = Position<uint>{
+				.x = pos.x + ((verts[0] & 0b001) >> 0),
+				.y = pos.y + ((verts[0] & 0b010) >> 1),
+				.z = pos.z + ((verts[0] & 0b100) >> 2)
 			};
 
-			vertex.x = pos.x + offset.x / 2.f;
-			vertex.y = pos.y + offset.y / 2.f;
-			vertex.z = pos.z + offset.z / 2.f;
-
+			// position of the second vertex on the edge
+			auto v2 = Position<uint>{
+				.x = pos.x + ((verts[1] & 0b001) >> 0),
+				.y = pos.y + ((verts[1] & 0b010) >> 1),
+				.z = pos.z + ((verts[1] & 0b100) >> 2)
+			};
+			// position of the interpolated vertex (based on the noise value at v1 and v2)
+			glm::vec3 vertex = interpolateVertex(v1, noiseAtPos(v1), v2, noiseAtPos(v2));
 			verts3D.push_back(vertex);
-
-			// normal calculation - 6 samples
-			// ignore edges of the map
-			auto vpos = pos + offset;
-			if (!(vpos.x > 0 && vpos.y > 0 && vpos.z > 0 &&
-						vpos.x < MAP_W && vpos.y < MAP_H && vpos.z < MAP_W)) {
-				verts3D.push_back(glm::vec3(0,-1,0));
-			} else {
-				// derivatives to figure out normal by using cross product
-				// vpos - position of THE VOXEL in world space based on the noise
-				float dx = noiseAtPos(vpos.offset(1, 0, 0)) - noiseAtPos(vpos.offset(-1, 0, 0));
-				float dy = noiseAtPos(vpos.offset(0,-1, 0)) - noiseAtPos(vpos.offset( 0, 1, 0));
-				float dz = noiseAtPos(vpos.offset(0, 0, 1)) - noiseAtPos(vpos.offset( 0, 0,-1));
-				glm::vec3 normal = glm::normalize(glm::vec3(dx, dy, dz));
-				verts3D.push_back(normal);
-			}
+			// interpolating the normal
+			verts3D.push_back(calculateNormal(vertex));
 		}
 	}
 }
