@@ -14,37 +14,38 @@
 #include "lodepng/lodepng.h"
 #include "shaderprogram.hpp"
 #include "marchingcubes.hpp"
+#include "log.hpp"
 
 using byte = unsigned char;
 using uint = unsigned;
-
-#define DEBUG
 
 // unique_ptr alias
 template<typename... T>
 using Uniq_Ptr = std::unique_ptr<T...>;
 
 // temporary vector to be removed
-using std::array, std::vector;
+using std::array;
+using std::vector;
 
-constexpr const char* 	WINDOW_TITLE = "GLTRY";
-constexpr uint 		WINDOW_W = 800;
-constexpr uint 		WINDOW_H = 600;
-
-constexpr uint MAP_W = 32;
-constexpr uint MAP_H = 16;
-
+constexpr const char* WINDOW_TITLE = "GLTRY";
+constexpr uint WINDOW_W = 800;
+constexpr uint WINDOW_H = 600;
 constexpr float ASPECT_RATIO = float(WINDOW_W) / WINDOW_H;
 constexpr float FOV = 90.f;
 
-// clipping
+// clipping distance
 constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = 256.f;
 
+// size of one chunk
+constexpr uint MAP_W = 128;
+constexpr uint MAP_H = 128;
+
+// size of the noise array 
 constexpr uint NOISE_W = MAP_W + 2;
 constexpr uint NOISE_H = MAP_H + 2;
 
-constexpr float noiseScale = 6.f;
+// iso
 constexpr float THRESHOLD = 0.f;
 
 template<typename T>
@@ -130,7 +131,7 @@ void drawScene(ShaderProgram* sp, GLFWwindow *window) {
 }
 
 void errCallback(int error, const char *description) {
-	fputs(description, stderr);
+	LOG_PRINT(description);
 }
 
 void mouseCallback(GLFWwindow *window, double xpos, double ypos) {
@@ -161,7 +162,6 @@ void mouseCallback(GLFWwindow *window, double xpos, double ypos) {
 
 void keyCallback(GLFWwindow *window, int key, int scancode, int act, int mod) {
 	const float speed = 10.f * deltaTime;
-
 	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
 		camera.pos += speed * camera.target;
 	if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
@@ -172,17 +172,14 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int act, int mod) {
 	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
     	camera.pos += 
     		glm::normalize(glm::cross(camera.target, camera.up)) * speed;
-#ifdef DEBUG
-	printf("Pos: x: %f, y: %f, z: %f\n", 
-			camera.pos.x, camera.pos.y, camera.pos.z);
-#endif
+	LOG_INFO("xyz: %.1f %.1f %.1f", camera.pos.x, camera.pos.y, camera.pos.z);
 }
 
 // DEBUGGING INFO
 void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id,
 		GLenum severity, GLsizei length,
 		const GLchar *message, const void *userParam) {
-  	fprintf(stderr, "GL CALLBACK: %s type = 0x%x, severity = 0x%x, message = %s\n",
+	LOG_WARN("GL CALLBACK: %s type = 0x%x, severity = 0x%x, message = %s\n",
 			(type == GL_DEBUG_TYPE_ERROR ? "** GL ERROR **" : ""), 
 			type, severity, message);
 }
@@ -194,6 +191,7 @@ void windowResizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 ShaderProgram* initProgram(GLFWwindow *window) {
+	LOG_INFO("Initialising openGL...");
 #ifdef DEBUG
 	glEnable(GL_DEBUG_OUTPUT);
 	glDebugMessageCallback(MessageCallback, 0);
@@ -237,8 +235,8 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	return sp;
 }
 
-int printFail(const char *message) {
-	fprintf(stderr, message, "\n");
+int pFail(const char *message) {
+	LOG_PRINT(message);
 	return -1;
 }
 
@@ -247,8 +245,8 @@ inline float& noiseAtPos(Position<uint> pos) {
 	return noise.at(pos.x + pos.z * NOISE_W + pos.y * (NOISE_W * NOISE_W));
 }
 // same as above + interpolation for floats
-inline float noiseAtPos(glm::vec3 pos) {
-	// pivot
+inline float& noiseAtPos(glm::vec3 pos) {
+	/* // pivot
 	glm::vec3 p0(uint(pos.x), uint(pos.y), uint(pos.z));
 
 	// shifted vectors for sampling
@@ -267,7 +265,8 @@ inline float noiseAtPos(glm::vec3 pos) {
 	float dz = glm::distance(pz, pos);
 
 	// interpolated
-	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz);
+	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz); */
+	return noiseAtPos(Position<uint>{uint(pos.x), uint(pos.y), uint(pos.z)});
 }
 
 glm::vec3 interpolateVertex(Position<uint> &v1, float val1, Position<uint> &v2, float val2) {
@@ -297,6 +296,7 @@ glm::vec3 calculateNormal(glm::vec3 v1) {
 }
 
 void genMesh() {
+	LOG_INFO("Generating mesh...");
 	constexpr uint step = 12; // 6 vertices + 6 normals // will be used for an array later on
 	for (uint i = 0; i < (MAP_W * MAP_W * MAP_H) * step; i += step) {
 		uint frac = i / step;
@@ -358,17 +358,17 @@ void genMesh() {
 }
 
 void saveNoisePNG(const char* fname, array<float, NOISE_W * NOISE_W>& noise) {
+	LOG_INFO("Saving noise pictures...");
 	array<byte, NOISE_W * NOISE_W> picture;
 	float max = -99999.f;
 	for (uint i = 0; i < noise.size(); i++) {
-		auto val = noise.at(i) * 128.f / noiseScale;
-		if (val > max) max = val;
-		picture.at(i) = noise.at(i) * 128.f / noiseScale;
+		picture.at(i) = (1 + noise.at(i)) * 128.f;
 	}
 	lodepng_encode_file(fname, picture.data(), 
 			NOISE_W, NOISE_W, LCT_GREY, 8);
 }
 void fill3DNoise() {
+	LOG_INFO("Generating noise...");
 	SimplexNoise noiseGen(0.1f, 1.f, 2.f, 0.5f);
 	constexpr uint octaves = 9;
 	// noise generation
@@ -428,7 +428,7 @@ int main() {
 	glfwSetErrorCallback(errCallback);
 	if (!glfwInit()) {
 		glfwTerminate();
-		return printFail("Cannot initialise GLFW.");
+		return pFail("Cannot initialise GLFW.");
 	}
 
 	// RAII, this might be overdone here but it still works 
@@ -441,13 +441,13 @@ int main() {
 				glfwCreateWindow(WINDOW_W, WINDOW_H, WINDOW_TITLE, NULL, NULL),
 				windowDestroyer);
 
-	if (!window.get()) return printFail("Cannot create window.");
+	if (!window.get()) return pFail("Cannot create window.");
 
 	glfwMakeContextCurrent(window.get());
 	glfwSwapInterval(1);
 	glViewport(0, 0, WINDOW_W, WINDOW_H);
 
-	if (glewInit() != GLEW_OK) return printFail("Cannot initialise GLEW.");
+	if (glewInit() != GLEW_OK) return pFail("Cannot initialise GLEW.");
 
 	auto shaderDestroyer = [&](ShaderProgram* sp) {
 		array<GLuint, 2> buffers({vao, vbo});

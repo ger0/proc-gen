@@ -1,4 +1,5 @@
 #include "shaderprogram.hpp"
+#include "log.hpp"
 
 char* ShaderProgram::readFile(const char* fileName) {
     int fSize;
@@ -38,17 +39,17 @@ GLuint ShaderProgram::loadShader(GLenum shaderType, const char* fileName) {
     if (infoLogLength > 1) {
 	infoLog = new char[infoLogLength];
 	glGetShaderInfoLog(shader, infoLogLength, &charsWritten, infoLog);
-	printf("%s\n", infoLog);
+	LOG_PRINT(infoLog);
 	delete []infoLog;
     }
     return shader;
 }
 
 ShaderProgram::ShaderProgram(const char* vShaderFile, const char* fShaderFile) {
-    printf("Loading vertex shader...\n");
+    LOG_INFO("Loading vertex shader...");
     vertexShader = loadShader(GL_VERTEX_SHADER, vShaderFile);
-    
-    printf("Loading fragment shader...\n");
+
+    LOG_INFO("Loading fragment shader...");
     fragmentShader = loadShader(GL_FRAGMENT_SHADER, fShaderFile);
 
     shaderProgram = glCreateProgram();
@@ -66,10 +67,10 @@ ShaderProgram::ShaderProgram(const char* vShaderFile, const char* fShaderFile) {
     if (infoLogLength > 1) {
 	infoLog = new char[infoLogLength];
 	glGetProgramInfoLog(shaderProgram, infoLogLength, &charsWritten, infoLog);
-	printf("%s\n", infoLog);
+	LOG_PRINT(infoLog);
 	delete []infoLog;
     }
-    printf("Shader program created \n");
+    LOG_INFO("Shader program created");
 }
 
 ShaderProgram::~ShaderProgram() {
@@ -80,7 +81,7 @@ ShaderProgram::~ShaderProgram() {
     glDeleteShader(fragmentShader);
 
     glDeleteProgram(shaderProgram);
-    printf("Shader program deleted \n");
+    LOG_INFO("Shader program deleted");
 }
 
 void ShaderProgram::use() {
