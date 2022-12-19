@@ -6,9 +6,12 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
+
 #include <vector>
 #include <array>
 #include <memory>
+#include <unordered_map>
 
 #include "SimplexNoise/SimplexNoise.h"
 #include "lodepng/lodepng.h"
@@ -38,8 +41,10 @@ constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = 256.f;
 
 // size of one chunk
-constexpr uint MAP_W = 128;
-constexpr uint MAP_H = 128;
+constexpr int CHNK_SIZE = 64;
+constexpr int MAP_W = CHNK_SIZE;
+constexpr int MAP_H = CHNK_SIZE;
+
 
 // size of the noise array 
 constexpr uint NOISE_W = MAP_W + 2;
@@ -72,13 +77,16 @@ struct Position {
 	}
 };
 
+// world space coordinates
+using Pos3i = Position<int>;
+
 struct Vertex {
-	glm::vec3 position;
-	glm::vec3 normal;
+	glm::vec3 pos;
+	glm::vec3 norm;
 };
 
 GLuint vao;
-GLuint vbo;
+//GLuint vbo;
 
 float deltaTime = 0.f;
 float lastFrame = 0.f;
@@ -86,11 +94,58 @@ float lastFrame = 0.f;
 // mouse position
 Position<float> mouseLast;
 
-array<float, NOISE_W * NOISE_W * NOISE_H> noise;
+using ChnkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
+//ChnkNoise noise;
 
 // vertex + normal data (6 + 6)
 // {pos{x, y, z}, norm{x, y, z}} for every single vertex
-vector<glm::vec3> verts3D;
+//vector<Vertex> mesh;
+
+// ------------------------- chunks ----------------------
+struct Chunk {
+	// mesh vertex size
+	size_t indices = 0;
+	// mesh
+	GLuint vbo;
+	// noise
+	array<float, NOISE_W * NOISE_W * NOISE_H> noise;
+};
+
+// used for hashing
+using ChnkCoord = uint64_t;
+std::unordered_map<ChnkCoord, Chunk> chunkMap;
+
+// position must be 32bit intiger otherwise crashiento
+// returns 64bit uint containing position of the chunk 
+ChnkCoord chunkHasher(Pos3i &pos) {
+	constexpr int max_chunks = static_cast<int>(INT32_MAX / CHNK_SIZE);
+	static int power = log2(max_chunks);
+	auto x = (pos.x + CHNK_SIZE) / CHNK_SIZE;
+	auto y = (pos.y + CHNK_SIZE) / CHNK_SIZE;
+	auto z = (pos.z + CHNK_SIZE) / CHNK_SIZE;
+	return x | z << power | y << power * 2;
+};
+
+Chunk genChunk(vector<Vertex> &mesh, ShaderProgram *sp) {
+	GLuint vbo;
+	glGenBuffers(1, &vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
+         	(void*)mesh.data(), GL_STATIC_DRAW);
+
+	uint count = 3;
+	printf("vertex: %lu\n",offsetof(Vertex, pos));
+	printf("normal: %lu\n",offsetof(Vertex, norm));
+	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, pos));
+	glEnableVertexAttribArray(sp->a("vertex"));
+
+	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, norm));
+	glEnableVertexAttribArray(sp->a("normal"));
+	return Chunk{.indices = mesh.size(), .vbo = vbo};
+}
+// -------------------------------------------------------
 
 struct Camera {
 	glm::vec3 pos = glm::vec3(0.f, 0.f, 3.f);
@@ -107,7 +162,7 @@ struct Camera {
 } camera;
 
 
-void drawScene(ShaderProgram* sp, GLFWwindow *window) {
+void drawChunk(Chunk &chnk, ShaderProgram* sp, GLFWwindow *window) {
 	// time
 	float currentFrame = glfwGetTime();
 	deltaTime = currentFrame - lastFrame;
@@ -125,7 +180,8 @@ void drawScene(ShaderProgram* sp, GLFWwindow *window) {
 	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
 
 	glBindVertexArray(vao);
-	glDrawArrays(GL_TRIANGLES, 0, (verts3D.size() / 2) * 3 );
+	glBindVertexArray(chnk.vbo);
+	glDrawArrays(GL_TRIANGLES, 0, chnk.indices);
 
 	glfwSwapBuffers(window);
 }
@@ -217,21 +273,6 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	// generating buffers
 	glGenVertexArrays(1, &vao);
 	glBindVertexArray(vao);
-
-	glGenBuffers(1, &vbo);
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	glBufferData(GL_ARRAY_BUFFER, verts3D.size() * sizeof(glm::vec3),
-         	(void*)verts3D.data(), GL_STATIC_DRAW);
-
-	uint count = 3;
-	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
-        	count * 2 * sizeof(float), 0);
-	glEnableVertexAttribArray(sp->a("vertex"));
-
-	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
-        	count * 2 * sizeof(float), &count);
-	glEnableVertexAttribArray(sp->a("normal"));
-
 	return sp;
 }
 
@@ -241,13 +282,18 @@ int pFail(const char *message) {
 }
 
 // converts Position<uint> into a reference to an element in the noise array
-inline float& noiseAtPos(Position<uint> pos) {
-	return noise.at(pos.x + pos.z * NOISE_W + pos.y * (NOISE_W * NOISE_W));
+inline float& noiseAtPos(Pos3i pos) {
+	auto chnkHash = chunkHasher(pos);
+	auto &noise = chunkMap[chnkHash].noise;
+	auto x = pos.x % CHNK_SIZE;
+	auto y = pos.y % CHNK_SIZE;
+	auto z = pos.z % CHNK_SIZE;
+	return noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W));
 }
 // same as above + interpolation for floats
-inline float& noiseAtPos(glm::vec3 pos) {
-	/* // pivot
-	glm::vec3 p0(uint(pos.x), uint(pos.y), uint(pos.z));
+inline float noiseAtPos(glm::vec3 pos) {
+	// pivot
+	glm::vec3 p0(int(pos.x), int(pos.y), int(pos.z));
 
 	// shifted vectors for sampling
 	glm::vec3 px = p0 + glm::vec3(1,0,0);
@@ -255,9 +301,9 @@ inline float& noiseAtPos(glm::vec3 pos) {
 	glm::vec3 pz = p0 + glm::vec3(0,0,1);
 
 	// samples
-	float sx = noiseAtPos(Position<uint>{uint(px.x), uint(px.y), uint(px.z)});
-	float sy = noiseAtPos(Position<uint>{uint(py.x), uint(py.y), uint(py.z)});
-	float sz = noiseAtPos(Position<uint>{uint(pz.x), uint(pz.y), uint(pz.z)});
+	float sx = noiseAtPos(Pos3i{int(px.x), int(px.y), int(px.z)});
+	float sy = noiseAtPos(Pos3i{int(py.x), int(py.y), int(py.z)});
+	float sz = noiseAtPos(Pos3i{int(pz.x), int(pz.y), int(pz.z)});
 
 	// distance 
 	float dx = glm::distance(px, pos);
@@ -265,11 +311,11 @@ inline float& noiseAtPos(glm::vec3 pos) {
 	float dz = glm::distance(pz, pos);
 
 	// interpolated
-	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz); */
-	return noiseAtPos(Position<uint>{uint(pos.x), uint(pos.y), uint(pos.z)});
+	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz);
+	//return noiseAtPos(Position<uint>{uint(pos.x), uint(pos.y), uint(pos.z)});
 }
 
-glm::vec3 interpolateVertex(Position<uint> &v1, float val1, Position<uint> &v2, float val2) {
+glm::vec3 interpolateVertex(Pos3i &v1, float val1, Pos3i &v2, float val2) {
 	// finding a 0 
 	glm::vec3 ret;
 	// coefficient
@@ -292,26 +338,28 @@ glm::vec3 calculateNormal(glm::vec3 v1) {
 	float dx = noiseAtPos(v1 + glm::vec3(1, 0, 0)) - noiseAtPos(v1 + glm::vec3(-1, 0, 0));
 	float dy = noiseAtPos(v1 + glm::vec3(0,-1, 0)) - noiseAtPos(v1 + glm::vec3( 0, 1, 0));
 	float dz = noiseAtPos(v1 + glm::vec3(0, 0, 1)) - noiseAtPos(v1 + glm::vec3( 0, 0,-1));
-	return -glm::normalize(glm::vec3(dx, dy, dz));
+	return -glm::normalize(glm::vec3(dx, -dy, dz));
+	//return glm::vec3(0,0,1);
 }
 
-void genMesh() {
+vector<Vertex> genMesh(Pos3i curr) {
 	LOG_INFO("Generating mesh...");
+	std::vector<Vertex> mesh;
 	constexpr uint step = 12; // 6 vertices + 6 normals // will be used for an array later on
-	for (uint i = 0; i < (MAP_W * MAP_W * MAP_H) * step; i += step) {
-		uint frac = i / step;
+	for (int i = 0; i < (MAP_W * MAP_W * MAP_H) * step; i += step) {
+		int frac = i / step;
 		auto xz = frac % (MAP_W * MAP_W); // index on the <x,z> plane
-		Position<uint> pos = {
-			.x = xz % MAP_W,
-			.y = frac / (MAP_W * MAP_W),
-			.z = xz / MAP_W
+		Pos3i pos = {
+			.x = curr.x + xz % MAP_W,
+			.y = curr.y + frac / (MAP_W * MAP_W),
+			.z = curr.z + xz / MAP_W
 		};
 
 		// cube in binary: (v7, v6, v5, v4, v3, v2, v1, v0)
 		byte cube = 0x0;
 		// offset in binary: (z, y, x)
 		for (byte offset = 0b000; offset <= 0b111; offset++) {
-			Position<uint> nPos = {
+			Pos3i nPos = {
 				.x = pos.x + (offset & 0b001),
 				.y = pos.y + ((offset & 0b010) >> 1),
 				.z = pos.z + ((offset & 0b100) >> 2),
@@ -336,25 +384,28 @@ void genMesh() {
 			auto verts = march_cubes::EdgeVertexIndices.at(edge);
 
 			// position of the first vertex on the edge
-			auto v1 = Position<uint>{
-				.x = pos.x + ((verts[0] & 0b001) >> 0),
-				.y = pos.y + ((verts[0] & 0b010) >> 1),
-				.z = pos.z + ((verts[0] & 0b100) >> 2)
+			auto v1 = Pos3i{
+				.x = pos.x + int((verts[0] & 0b001) >> 0),
+				.y = pos.y + int((verts[0] & 0b010) >> 1),
+				.z = pos.z + int((verts[0] & 0b100) >> 2)
 			};
 
 			// position of the second vertex on the edge
-			auto v2 = Position<uint>{
-				.x = pos.x + ((verts[1] & 0b001) >> 0),
-				.y = pos.y + ((verts[1] & 0b010) >> 1),
-				.z = pos.z + ((verts[1] & 0b100) >> 2)
+			auto v2 = Pos3i{
+				.x = pos.x + int((verts[1] & 0b001) >> 0),
+				.y = pos.y + int((verts[1] & 0b010) >> 1),
+				.z = pos.z + int((verts[1] & 0b100) >> 2)
 			};
+
+			Vertex vertex;
 			// position of the interpolated vertex (based on the noise value at v1 and v2)
-			glm::vec3 vertex = interpolateVertex(v1, noiseAtPos(v1), v2, noiseAtPos(v2));
-			verts3D.push_back(vertex);
+			vertex.pos = interpolateVertex(v1, noiseAtPos(v1), v2, noiseAtPos(v2));
 			// interpolating the normal
-			verts3D.push_back(calculateNormal(vertex));
+			vertex.norm = calculateNormal(vertex.pos);
+			mesh.push_back(vertex);
 		}
 	}
+	return mesh;
 }
 
 void saveNoisePNG(const char* fname, array<float, NOISE_W * NOISE_W>& noise) {
@@ -367,21 +418,21 @@ void saveNoisePNG(const char* fname, array<float, NOISE_W * NOISE_W>& noise) {
 	lodepng_encode_file(fname, picture.data(), 
 			NOISE_W, NOISE_W, LCT_GREY, 8);
 }
-void fill3DNoise() {
+void fillNoise(Pos3i &curr) {
 	LOG_INFO("Generating noise...");
 	SimplexNoise noiseGen(0.1f, 1.f, 2.f, 0.5f);
 	constexpr uint octaves = 9;
 	// noise generation
-	for (uint y = 0; y < NOISE_H; y++) {
-		array<byte, NOISE_W * NOISE_W> picture;
-		for (uint z = 0; z <= MAP_W; z++) {
-			for (uint x = 0; x <= MAP_W; x++) {
+	for (int y = 0; y < NOISE_H; y++) {
+		//array<byte, NOISE_W * NOISE_W> picture;
+		for (int z = 0; z <= MAP_W; z++) {
+			for (int x = 0; x <= MAP_W; x++) {
 				auto val = noiseGen.fractal(octaves, x, y, z);
-				auto pos = Position<uint>{x, y, z};
+				auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
 				noiseAtPos(pos) = val;
 			}
 		}
-#ifdef DEBUG
+/* #ifdef DEBUG
 		// outputnoise directory must exist
 		constexpr uint size = NOISE_W * NOISE_W;
 		array<float, size> noiseSlice;
@@ -391,39 +442,11 @@ void fill3DNoise() {
 		char str[21 + 48 / 8];
 		sprintf(str, "outputnoise/noise-%u.png", y);
 		saveNoisePNG(str, noiseSlice);
-#endif
-	}
-}
-
-// debugging map
-void fillNoiseTest() {
-	for (uint y = 0; y < NOISE_H; y++) {
-		array<byte, NOISE_W * NOISE_W> picture;
-		for (uint z = 0; z <= MAP_W; z++) {
-			for (uint x = 0; x <= MAP_W; x++) {
-				auto pos = Position<uint>{x, y, z};
-				noiseAtPos(pos) = -1.f;
-			}
-		}
-		auto pos = Position<uint>{0, 0, 0};
-		noiseAtPos(pos) = -1.f;
-#ifdef DEBUG
-		// outputnoise directory must exist
-		constexpr uint size = NOISE_W * NOISE_W;
-		array<float, size> noiseSlice;
-		std::copy(noise.begin() + size * y,
-				noise.begin() + size * (y + 1),
-				noiseSlice.begin());
-		char str[21 + 48 / 8];
-		sprintf(str, "outputnoise/noise-%u.png", y);
-		saveNoisePNG(str, noiseSlice);
-#endif
+#endif */
 	}
 }
 
 int main() {
-	fill3DNoise();
-	genMesh();
 
 	glfwSetErrorCallback(errCallback);
 	if (!glfwInit()) {
@@ -450,7 +473,7 @@ int main() {
 	if (glewInit() != GLEW_OK) return pFail("Cannot initialise GLEW.");
 
 	auto shaderDestroyer = [&](ShaderProgram* sp) {
-		array<GLuint, 2> buffers({vao, vbo});
+		array<GLuint, 1> buffers({vao});
 		glDeleteBuffers(buffers.size(), buffers.data());
 		delete sp;
 	};
@@ -458,9 +481,37 @@ int main() {
 	Uniq_Ptr<ShaderProgram, decltype(shaderDestroyer)> sp(
 			initProgram(window.get()),
 			shaderDestroyer);
+	
+	Pos3i currentPos = {0, 0, 0};
+	Chunk chnk;
+	chunkMap[chunkHasher(currentPos)] = chnk;
+	fillNoise(currentPos);
+	auto mesh = genMesh(currentPos);
+	genChunk(mesh, sp.get());
 
+	// main loop
 	while (!glfwWindowShouldClose(window.get())) {
+		{ // chunk generation
+			// gen distance
+			constexpr uint CHNK_DIST = 2;
+			for (int x = -CHNK_DIST; x <= CHNK_DIST; x++) {
+				for (int y = -CHNK_DIST; y <= CHNK_DIST; y++) {
+					for (int z = -CHNK_DIST; z <= CHNK_DIST; z++) {
+						currentPos = {
+							.x = int(camera.pos.x),
+							.y = int(camera.pos.y),
+							.z = int(camera.pos.z)
+						};
+						chunkMap[chunkHasher(currentPos)] = chnk;
+						fillNoise(currentPos);
+						mesh = genMesh(currentPos);
+						genChunk(mesh, sp.get());
+					}
+				}
+			}
+		}
+
     	glfwPollEvents();
-		drawScene(sp.get(), window.get());
+		drawChunk(chnk, sp.get(), window.get());
 	}
 }

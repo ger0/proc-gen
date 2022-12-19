@@ -1,18 +1,18 @@
 #version 330
 precision mediump float;
 
+vec3 lightPos = vec3(0, 0, -1);
 in vec3 iNormal;
 in vec3 vertPos;
 
 uniform int mode;
 
-const vec3 lightPos = vec3(10, 1, 1);
-const vec3 lightColor = vec3(1.0, 1.0, 0.9);
+const vec3 lightColor = vec3(0.5, 0.5, 0.5);
 const float lightPower = 90.0;
 const vec3 ambientColor = vec3(0.01, 0.08, 0.0);
 const vec3 diffuseColor = vec3(0.15, 0.43, 0.0);
 const vec3 specColor = vec3(1.0, 1.0, 0.7);
-const float shininess = 8.0;
+const float shininess = 32.0;
 const float screenGamma = 2.2; // Assume the monitor is calibrated to the sRGB color space
 
 void main() {
