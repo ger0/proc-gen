@@ -21,4 +21,5 @@ constexpr const char* WHT = "\x1B[37m";
 #else 
 #define LOG_INFO(...) ;
 #define LOG_WARN(...) ;
+#define LOG_PRINT(...) ;
 #endif
