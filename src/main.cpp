@@ -13,6 +13,10 @@
 #include <memory>
 #include <unordered_map>
 
+#include "imgui/imgui.h"
+#include "imgui/imgui_impl_glfw.h"
+#include "imgui/imgui_impl_opengl3.h"
+
 #include "SimplexNoise/SimplexNoise.h"
 #include "lodepng/lodepng.h"
 #include "shaderprogram.hpp"
@@ -53,6 +57,7 @@ constexpr uint NOISE_H = MAP_H + 2;
 // iso
 constexpr float THRESHOLD = 0.f;
 
+
 template<typename T>
 struct Position {
 	T x;
@@ -79,6 +84,9 @@ struct Position {
 
 // world space coordinates
 using Pos3i = Position<int>;
+
+// debugggg
+Pos3i currChnkPos;
 
 struct Vertex {
 	glm::vec3 pos;
@@ -129,11 +137,19 @@ struct Camera {
 	float pitch = 0.f;
 } camera;
 
-void drawChunk(Chunk &chnk) {
-	//LOG_INFO("VBO: %u", chnk.vbo);
+void drawChunk(Chunk &chnk, ShaderProgram* sp) {
 	glBindVertexArray(vao);
-	//glBindVertexArray(chnk.vbo);
 	glBindBuffer(GL_ARRAY_BUFFER, chnk.vbo);
+
+	uint count = 3;
+	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, pos));
+	glEnableVertexAttribArray(sp->a("vertex"));
+
+	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, norm));
+	glEnableVertexAttribArray(sp->a("normal"));
+
 	glDrawArrays(GL_TRIANGLES, 0, chnk.indices);
 }
 
@@ -179,7 +195,10 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int act, int mod) {
 	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
     	camera.pos += 
     		glm::normalize(glm::cross(camera.target, camera.up)) * speed;
-	LOG_INFO("xyz: %.1f %.1f %.1f", camera.pos.x, camera.pos.y, camera.pos.z);
+
+	currChnkPos.x = glm::floor(camera.pos.x / CHNK_SIZE);
+	currChnkPos.y = glm::floor(camera.pos.y / CHNK_SIZE);
+	currChnkPos.z = glm::floor(camera.pos.z / CHNK_SIZE);
 }
 
 // DEBUGGING INFO
@@ -200,8 +219,8 @@ void windowResizeCallback(GLFWwindow* window, int width, int height) {
 ShaderProgram* initProgram(GLFWwindow *window) {
 	LOG_INFO("Initialising openGL...");
 #ifdef DEBUG
-	//glEnable(GL_DEBUG_OUTPUT);
-	//glDebugMessageCallback(MessageCallback, 0);
+	glEnable(GL_DEBUG_OUTPUT);
+	glDebugMessageCallback(MessageCallback, 0);
 #endif
 
 	glEnable(GL_DEPTH_TEST);
@@ -211,7 +230,7 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	//glCullFace(GL_BACK);
 
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glClearColor(0, 0, 0, 1.f);
+	glClearColor(0.45, 0.716, 0.914, 1.f);
 
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwSetCursorPosCallback(window, mouseCallback);
@@ -232,15 +251,14 @@ int pFail(const char *message) {
 	return -1;
 }
 
-// position must be 32bit intiger otherwise crashiento
-// returns 64bit uint containing position of the chunk 
+// input: worldspace coordinates, output: chunk hash
+// position must be 16bit integer otherwise crashiento
+// returns 64bit uint containing position of the chunk
 ChnkCoord chunkHasher(Pos3i &pos) {
-	constexpr int max_chunks = static_cast<int>(INT32_MAX / CHNK_SIZE);
-	static int power = log2(max_chunks);
-	auto x = (pos.x + CHNK_SIZE) / CHNK_SIZE;
-	auto y = (pos.y + CHNK_SIZE) / CHNK_SIZE;
-	auto z = (pos.z + CHNK_SIZE) / CHNK_SIZE;
-	return x | z << power | y << power * 2;
+	int16_t x = glm::floor(pos.x / CHNK_SIZE);
+	int16_t y = glm::floor(pos.y / CHNK_SIZE);
+	int16_t z = glm::floor(pos.z / CHNK_SIZE);
+	return ChnkCoord(x) ^ (ChnkCoord(z) << 16) ^ (ChnkCoord(y) << 32);
 };
 
 // converts Position<uint> into a reference to an element in the noise array
@@ -383,15 +401,6 @@ void genChunk(Pos3i &currPos, ShaderProgram *sp) {
 	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
          	(void*)mesh.data(), GL_STATIC_DRAW);
 
-	uint count = 3;
-	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
-        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, pos));
-	glEnableVertexAttribArray(sp->a("vertex"));
-
-	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
-        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, norm));
-	glEnableVertexAttribArray(sp->a("normal"));
-
 	chunkMap[hash].indices = mesh.size();
 	chunkMap[hash].vbo = vbo;
 }
@@ -407,6 +416,7 @@ void saveNoisePNG(const char* fname, ChnkNoise &noise) {
 	lodepng_encode_file(fname, picture.data(), 
 			NOISE_W, NOISE_W, LCT_GREY, 8);
 }
+
 ChnkNoise fillNoise(Pos3i &curr) {
 	LOG_INFO("Generating noise...");
 	ChnkNoise noise;
@@ -482,33 +492,44 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	glUniformMatrix4fv(sp->u("V"), 1, false, glm::value_ptr(V));
 	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
 
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	constexpr int CHNK_DIST = 1;
 
+#ifdef DEBUG
+	ImGui::Begin("DEBUG INFO");
+	ImGui::Text(" x: %0.1f\n y: %0.1f\n z: %0.1f\n", camera.pos.x, camera.pos.y, camera.pos.z);
+	ImGui::Text("[%i %i %i]\n\n", currChnkPos.x, currChnkPos.y, currChnkPos.z);
+#endif
+
 	uint i = 0;
 	for (int x = -CHNK_DIST; x <= CHNK_DIST; x++) {
-	for (int y = -CHNK_DIST; y <= CHNK_DIST; y++) {
+	for (int y = 0; y <= 0; y++) {
 	for (int z = -CHNK_DIST; z <= CHNK_DIST; z++) {
 		i++;
-		Pos3i currentPos = {
-			.x = int(camera.pos.x) + x * int(CHNK_DIST),
-			.y = int(camera.pos.y) + y * int(CHNK_DIST),
-			.z = int(camera.pos.z) + z * int(CHNK_DIST)
+		Pos3i cPos = {
+			.x = int(camera.pos.x) + x * int(CHNK_SIZE),
+			.y = int(camera.pos.y) + y * int(CHNK_SIZE),
+			.z = int(camera.pos.z) + z * int(CHNK_SIZE)
 		};
-		auto hash = chunkHasher(currentPos);
+		auto hash = chunkHasher(cPos);
+
+#ifdef DEBUG
+		ImGui::Text("Hash[%i %i %i]:\n %lu\n", x, y, z, hash); 
+#endif
+
 		Chunk &chnk = chunkMap[hash];
-		if (chnk.indices == 0) {
+		if (chnk.indices < 3) {
 			LOG_INFO("Generating chunk (%u / %.0f)...", i, pow(CHNK_DIST * 2 + 1, 3));
 			LOG_INFO("Hash: %lu", hash);
-			fillNoise(currentPos);
-			genChunk(currentPos, sp);
+			fillNoise(cPos);
+			genChunk(cPos, sp);
 		}
-		drawChunk(chnk);
-	}
-	}
-	}
-	glfwSwapBuffers(window);
+		drawChunk(chnk, sp);
+	}}}
+
+#ifdef DEBUG
+	ImGui::End();
+#endif
 }
 
 int main() {
@@ -517,6 +538,10 @@ int main() {
 		glfwTerminate();
 		return pFail("Cannot initialise GLFW.");
 	}
+
+    const char* glsl_version = "#version 130";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
 	// RAII, this might be overdone here but it still works 
 	auto windowDestroyer = [&](GLFWwindow* window) {
@@ -536,9 +561,28 @@ int main() {
 
 	if (glewInit() != GLEW_OK) return pFail("Cannot initialise GLEW.");
 
+	// imgui init
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+
+	ImGuiIO& io = ImGui::GetIO();
+
+	ImGui::StyleColorsClassic();
+	ImGui_ImplGlfw_InitForOpenGL(window.get(), true);
+
+	ImGui_ImplOpenGL3_Init(glsl_version);
+
+
 	auto shaderDestroyer = [&](ShaderProgram* sp) {
 		array<GLuint, 1> buffers({vao});
 		glDeleteBuffers(buffers.size(), buffers.data());
+		
+		// freeing vbos on the gpu
+		vector<GLuint> vbos;
+		for (auto &chnk : chunkMap) {
+			vbos.push_back(chnk.second.vbo);
+		}
+		glDeleteBuffers(vbos.size(), vbos.data());
 		delete sp;
 	};
 	// pointer to a ShaderProgram
@@ -549,6 +593,17 @@ int main() {
 	// main loop
 	while (!glfwWindowShouldClose(window.get())) {
     	glfwPollEvents();
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    	ImGui_ImplOpenGL3_NewFrame();
+    	ImGui_ImplGlfw_NewFrame();
+    	ImGui::NewFrame();
+
     	renderChunks(window.get(), sp.get());
+
+		ImGui::Render();
+		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+		glfwSwapBuffers(window.get());
 	}
 }
