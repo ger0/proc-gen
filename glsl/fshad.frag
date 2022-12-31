@@ -16,7 +16,6 @@ const float shininess = 32.0;
 const float screenGamma = 2.2; // Assume the monitor is calibrated to the sRGB color space
 
 void main() {
-  ambientColor = normalize(iNormal);
   vec3 normal = normalize(iNormal);
   vec3 lightDir = lightPos - vertPos;
   float distance = length(lightDir);

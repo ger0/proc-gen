@@ -13,6 +13,8 @@
 #include <memory>
 #include <unordered_map>
 
+#include <omp.h>
+
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_glfw.h"
 #include "imgui/imgui_impl_opengl3.h"
@@ -85,16 +87,10 @@ struct Position {
 // world space coordinates
 using Pos3i = Position<int>;
 
-// debugggg
+// [TODO]: remove later
 Pos3i currChnkPos;
 
-struct Vertex {
-	glm::vec3 pos;
-	glm::vec3 norm;
-};
-
 GLuint vao;
-//GLuint vbo;
 
 float deltaTime = 0.f;
 float lastFrame = 0.f;
@@ -102,12 +98,12 @@ float lastFrame = 0.f;
 // mouse position
 Position<float> mouseLast;
 
-using ChnkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
-//ChnkNoise noise;
+struct Vertex {
+	glm::vec3 pos;
+	glm::vec3 norm;
+};
 
-// vertex + normal data (6 + 6)
-// {pos{x, y, z}, norm{x, y, z}} for every single vertex
-//vector<Vertex> mesh;
+using ChnkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
 
 // ------------------------- chunks ----------------------
 struct Chunk {
@@ -142,15 +138,19 @@ void drawChunk(Chunk &chnk, ShaderProgram* sp) {
 	glBindBuffer(GL_ARRAY_BUFFER, chnk.vbo);
 
 	uint count = 3;
+	// passing position vector to vao
 	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
         	sizeof(Vertex), (GLvoid*)offsetof(Vertex, pos));
 	glEnableVertexAttribArray(sp->a("vertex"));
 
+	// passing normal vector to vao
 	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
         	sizeof(Vertex), (GLvoid*)offsetof(Vertex, norm));
 	glEnableVertexAttribArray(sp->a("normal"));
 
 	glDrawArrays(GL_TRIANGLES, 0, chnk.indices);
+
+	glBindVertexArray(0);
 }
 
 void errCallback(int error, const char *description) {
@@ -184,7 +184,7 @@ void mouseCallback(GLFWwindow *window, double xpos, double ypos) {
 }
 
 void keyCallback(GLFWwindow *window, int key, int scancode, int act, int mod) {
-	const float speed = 10.f * deltaTime;
+	const float speed = 20.f * deltaTime;
 	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
 		camera.pos += speed * camera.target;
 	if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
@@ -226,8 +226,8 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
 
-	//glEnable(GL_CULL_FACE);
-	//glCullFace(GL_BACK);
+	glEnable(GL_CULL_FACE);
+	glCullFace(GL_BACK);
 
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glClearColor(0.45, 0.716, 0.914, 1.f);
@@ -255,10 +255,13 @@ int pFail(const char *message) {
 // position must be 16bit integer otherwise crashiento
 // returns 64bit uint containing position of the chunk
 ChnkCoord chunkHasher(Pos3i &pos) {
-	int16_t x = glm::floor(pos.x / CHNK_SIZE);
-	int16_t y = glm::floor(pos.y / CHNK_SIZE);
-	int16_t z = glm::floor(pos.z / CHNK_SIZE);
-	return ChnkCoord(x) ^ (ChnkCoord(z) << 16) ^ (ChnkCoord(y) << 32);
+	ChnkCoord x = glm::floor(pos.x / CHNK_SIZE);
+	ChnkCoord y = glm::floor(pos.y / CHNK_SIZE);
+	ChnkCoord z = glm::floor(pos.z / CHNK_SIZE);
+	x = x << 0;
+	z = z << 16;
+	y = y << 32;
+	return x + y + z;
 };
 
 // converts Position<uint> into a reference to an element in the noise array
@@ -273,6 +276,7 @@ inline float& noiseAtPos(Pos3i pos) {
 
 // same as above + interpolation for floats
 inline float noiseAtPos(glm::vec3 pos) {
+	/* // interpolated
 	// pivot
 	glm::vec3 p0(int(pos.x), int(pos.y), int(pos.z));
 
@@ -291,9 +295,10 @@ inline float noiseAtPos(glm::vec3 pos) {
 	float dy = glm::distance(py, pos);
 	float dz = glm::distance(pz, pos);
 
-	// interpolated
-	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz);
-	//return noiseAtPos(Position<uint>{uint(pos.x), uint(pos.y), uint(pos.z)});
+	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz); */
+
+	// no interpolation (poormans normal)
+	return noiseAtPos(Pos3i{int(pos.x), int(pos.y), int(pos.z)});
 }
 
 glm::vec3 interpolateVertex(Pos3i &v1, float val1, Pos3i &v2, float val2) {
@@ -308,12 +313,6 @@ glm::vec3 interpolateVertex(Pos3i &v1, float val1, Pos3i &v2, float val2) {
 }
 
 glm::vec3 calculateNormal(glm::vec3 v1) {
-	// normal calculation - 6 samples
-	// ignore edges of the map
-	if (v1.x <= 0.f || v1.y <= 0.f || v1.z <= 0.f ||
-				v1.x >= MAP_W || v1.y >= MAP_H || v1.z >= MAP_W) {
-		return glm::vec3(0,0,0);
-	}
 	// derivatives to figure out normal by using cross product
 	// v1 - position of THE VOXEL in world space based on the noise
 	float dx = noiseAtPos(v1 + glm::vec3(1, 0, 0)) - noiseAtPos(v1 + glm::vec3(-1, 0, 0));
@@ -325,10 +324,13 @@ glm::vec3 calculateNormal(glm::vec3 v1) {
 
 vector<Vertex> genMesh(Pos3i &curr) {
 	LOG_INFO("Generating mesh...");
-	std::vector<Vertex> mesh;
-	constexpr uint step = 12; // 6 vertices + 6 normals // will be used for an array later on
-	for (int i = 0; i < (MAP_W * MAP_W * MAP_H) * step; i += step) {
-		int frac = i / step;
+	// cubes containing vertex information for entire chunk
+	array<vector<Vertex>, MAP_W * MAP_W * MAP_H> cubes;
+
+	auto timer = glfwGetTime();
+#pragma omp parallel for
+	for (int i = 0; i < (MAP_W * MAP_W * MAP_H); i++) {
+		int frac = i;
 		auto xz = frac % (MAP_W * MAP_W); // index on the <x,z> plane
 		Pos3i pos = {
 			.x = curr.x + xz % MAP_W,
@@ -354,8 +356,7 @@ vector<Vertex> genMesh(Pos3i &curr) {
 
 		// array of triplets of the cube edges, each triplet = 1 triangle
 		auto edges = march_cubes::TriangleTable.at(cube);
-
-		// array of vertices for a triangle
+		
 		for (uint& edge : edges) {
 			// check if theres no more edges left
 			if (edge == march_cubes::x) {
@@ -383,14 +384,23 @@ vector<Vertex> genMesh(Pos3i &curr) {
 			vertex.pos = interpolateVertex(v1, noiseAtPos(v1), v2, noiseAtPos(v2));
 			// interpolating the normal
 			vertex.norm = calculateNormal(vertex.pos);
-			mesh.push_back(vertex);
+
+			cubes.at(i).push_back(vertex);
 		}
 	}
+	LOG_INFO("TIME GENERATING CHUNK: %f", glfwGetTime() - timer);
+
+	vector<Vertex> mesh;
+	for (auto &cube : cubes) {
+		mesh.insert(mesh.end(), cube.begin(), cube.end());
+	}
+	// copy elision so it shouldnt return by value
 	return mesh;
 }
 
 void genChunk(Pos3i &currPos, ShaderProgram *sp) {
 	auto hash = chunkHasher(currPos);
+
 	auto mesh = genMesh(currPos);
 	LOG_INFO("Mesh size: %lu", mesh.size());
 
@@ -417,34 +427,27 @@ void saveNoisePNG(const char* fname, ChnkNoise &noise) {
 			NOISE_W, NOISE_W, LCT_GREY, 8);
 }
 
+
 ChnkNoise fillNoise(Pos3i &curr) {
 	LOG_INFO("Generating noise...");
 	ChnkNoise noise;
-	SimplexNoise noiseGen(0.1f, 1.f, 2.f, 0.5f);
+	static SimplexNoise noiseGen(0.1f, 1.f, 2.f, 0.5f);
 	constexpr uint octaves = 9;
 	// noise generation
+	//
+	auto timer = glfwGetTime();
+#pragma omp parallel for
 	for (int y = 0; y < NOISE_H; y++) {
-		//array<byte, NOISE_W * NOISE_W> picture;
 		for (int z = 0; z <= MAP_W; z++) {
 			for (int x = 0; x <= MAP_W; x++) {
-				auto val = noiseGen.fractal(octaves, x, y, z);
 				auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
+				auto val = noiseGen.fractal(octaves, pos.x, pos.y, pos.z);
 				noiseAtPos(pos) = val;
 				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 			}
 		}
-/* #ifdef DEBUG
-		// outputnoise directory must exist
-		constexpr uint size = NOISE_W * NOISE_W;
-		array<float, size> noiseSlice;
-		std::copy(noise.begin() + size * y,
-				noise.begin() + size * (y + 1),
-				noiseSlice.begin());
-		char str[21 + 48 / 8];
-		sprintf(str, "outputnoise/noise-%u.png", y);
-		saveNoisePNG(str, noiseSlice);
-#endif */
 	}
+	LOG_INFO("TIME GENERATING NOISE: %f", glfwGetTime() - timer);
 	return noise;
 }
 
@@ -453,35 +456,17 @@ ChnkNoise fillall(Pos3i &curr) {
 	ChnkNoise noise;
 	// noise generation
 	for (int y = 0; y < NOISE_H; y++) {
-		//array<byte, NOISE_W * NOISE_W> picture;
 		for (int z = 0; z <= MAP_W; z++) {
 			for (int x = 0; x <= MAP_W; x++) {
 				auto val = 1.f;
-				//auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
-				//noiseAtPos(pos) = val;
 				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 			}
 		}
-/* #ifdef DEBUG
-		// outputnoise directory must exist
-		constexpr uint size = NOISE_W * NOISE_W;
-		array<float, size> noiseSlice;
-		std::copy(noise.begin() + size * y,
-				noise.begin() + size * (y + 1),
-				noiseSlice.begin());
-		char str[21 + 48 / 8];
-		sprintf(str, "outputnoise/noise-%u.png", y);
-		saveNoisePNG(str, noiseSlice);
-#endif */
 	}
 	return noise;
 }
 
 void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
-	float currentFrame = glfwGetTime();
-	deltaTime = currentFrame - lastFrame;
-	lastFrame = currentFrame;
-
 	sp->use();
 
 	glm::mat4 M = glm::mat4(1.f);
@@ -495,41 +480,37 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 
 	constexpr int CHNK_DIST = 1;
 
-#ifdef DEBUG
 	ImGui::Begin("DEBUG INFO");
-	ImGui::Text(" x: %0.1f\n y: %0.1f\n z: %0.1f\n", camera.pos.x, camera.pos.y, camera.pos.z);
+	ImGui::Text("x: %0.1f\n y: %0.1f\n z: %0.1f\n", camera.pos.x, camera.pos.y, camera.pos.z);
 	ImGui::Text("[%i %i %i]\n\n", currChnkPos.x, currChnkPos.y, currChnkPos.z);
-#endif
 
-	uint i = 0;
 	for (int x = -CHNK_DIST; x <= CHNK_DIST; x++) {
-	for (int y = 0; y <= 0; y++) {
+	for (int y = -CHNK_DIST; y <= CHNK_DIST; y++) {
 	for (int z = -CHNK_DIST; z <= CHNK_DIST; z++) {
-		i++;
 		Pos3i cPos = {
-			.x = int(camera.pos.x) + x * int(CHNK_SIZE),
-			.y = int(camera.pos.y) + y * int(CHNK_SIZE),
-			.z = int(camera.pos.z) + z * int(CHNK_SIZE)
+			.x = (currChnkPos.x + x) * CHNK_SIZE,
+			.y = (currChnkPos.y + y) * CHNK_SIZE,
+			.z = (currChnkPos.z + z) * CHNK_SIZE
 		};
 		auto hash = chunkHasher(cPos);
 
-#ifdef DEBUG
-		ImGui::Text("Hash[%i %i %i]:\n %lu\n", x, y, z, hash); 
-#endif
+// 		ImGui::Text("Hash[%i %i %i]:\n %lu\n", cPos.x / CHNK_SIZE, 
+// 				cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE, hash); 
 
 		Chunk &chnk = chunkMap[hash];
 		if (chnk.indices < 3) {
-			LOG_INFO("Generating chunk (%u / %.0f)...", i, pow(CHNK_DIST * 2 + 1, 3));
+			LOG_INFO("Generating chunk [%i %i %i]...", cPos.x / CHNK_SIZE, 
+				cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE);
 			LOG_INFO("Hash: %lu", hash);
+
 			fillNoise(cPos);
 			genChunk(cPos, sp);
+			lastFrame = glfwGetTime();
 		}
 		drawChunk(chnk, sp);
 	}}}
 
-#ifdef DEBUG
 	ImGui::End();
-#endif
 }
 
 int main() {
@@ -572,7 +553,6 @@ int main() {
 
 	ImGui_ImplOpenGL3_Init(glsl_version);
 
-
 	auto shaderDestroyer = [&](ShaderProgram* sp) {
 		array<GLuint, 1> buffers({vao});
 		glDeleteBuffers(buffers.size(), buffers.data());
@@ -589,12 +569,17 @@ int main() {
 	Uniq_Ptr<ShaderProgram, decltype(shaderDestroyer)> sp(
 			initProgram(window.get()),
 			shaderDestroyer);
-	
+
 	// main loop
 	while (!glfwWindowShouldClose(window.get())) {
+		float currentFrame = glfwGetTime();
+		deltaTime = currentFrame - lastFrame;
+		lastFrame = currentFrame;
+
     	glfwPollEvents();
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+		// imgui
     	ImGui_ImplOpenGL3_NewFrame();
     	ImGui_ImplGlfw_NewFrame();
     	ImGui::NewFrame();
