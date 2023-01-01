@@ -112,6 +112,7 @@ struct Chunk {
 	// mesh
 	GLuint vbo;
 	ChnkNoise noise;
+	bool generated = false;
 };
 
 // used for hashing
@@ -341,6 +342,7 @@ vector<Vertex> genMesh(Pos3i &curr) {
 		// cube in binary: (v7, v6, v5, v4, v3, v2, v1, v0)
 		byte cube = 0x0;
 		// offset in binary: (z, y, x)
+		//auto isoValue = THRESHOLD + float(pos.y) / 16;
 		for (byte offset = 0b000; offset <= 0b111; offset++) {
 			Pos3i nPos = {
 				.x = pos.x + (offset & 0b001),
@@ -411,8 +413,10 @@ void genChunk(Pos3i &currPos, ShaderProgram *sp) {
 	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
          	(void*)mesh.data(), GL_STATIC_DRAW);
 
-	chunkMap[hash].indices = mesh.size();
-	chunkMap[hash].vbo = vbo;
+	auto &chnk = chunkMap[hash];
+	chnk.indices = mesh.size();
+	chnk.vbo = vbo;
+	chnk.generated = true;
 }
 // -------------------------------------------------------
 
@@ -431,8 +435,8 @@ void saveNoisePNG(const char* fname, ChnkNoise &noise) {
 ChnkNoise fillNoise(Pos3i &curr) {
 	LOG_INFO("Generating noise...");
 	ChnkNoise noise;
-	static SimplexNoise noiseGen(0.1f, 1.f, 2.f, 0.5f);
-	constexpr uint octaves = 9;
+	static SimplexNoise noiseGen(0.01f, 1.f, 2.f, 0.5f);
+	constexpr uint octaves = 8;
 	// noise generation
 	//
 	auto timer = glfwGetTime();
@@ -442,8 +446,9 @@ ChnkNoise fillNoise(Pos3i &curr) {
 			for (int x = 0; x <= MAP_W; x++) {
 				auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
 				auto val = noiseGen.fractal(octaves, pos.x, pos.y, pos.z);
+				val -= pos.y / 32.f;
 				noiseAtPos(pos) = val;
-				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
+				//noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 			}
 		}
 	}
@@ -498,7 +503,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 // 				cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE, hash); 
 
 		Chunk &chnk = chunkMap[hash];
-		if (chnk.indices < 3) {
+		if (!chnk.generated) {
 			LOG_INFO("Generating chunk [%i %i %i]...", cPos.x / CHNK_SIZE, 
 				cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE);
 			LOG_INFO("Hash: %lu", hash);
