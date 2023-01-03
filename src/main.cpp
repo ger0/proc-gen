@@ -8,6 +8,9 @@
 #include <cstdlib>
 #include <cstddef>
 
+#include <thread>
+#include <mutex>
+
 #include <vector>
 #include <array>
 #include <memory>
@@ -53,8 +56,8 @@ constexpr int MAP_H = CHNK_SIZE;
 
 
 // size of the noise array 
-constexpr uint NOISE_W = MAP_W + 2;
-constexpr uint NOISE_H = MAP_H + 2;
+constexpr uint NOISE_W = MAP_W + 3;
+constexpr uint NOISE_H = MAP_H + 3;
 
 // iso
 constexpr float THRESHOLD = 0.f;
@@ -91,6 +94,7 @@ using Pos3i = Position<int>;
 Pos3i currChnkPos;
 
 GLuint vao;
+std::mutex glCriticalSection;
 
 float deltaTime = 0.f;
 float lastFrame = 0.f;
@@ -109,9 +113,13 @@ using ChnkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
 struct Chunk {
 	// mesh vertex size
 	size_t indices = 0;
-	// mesh
+	// when a thread generating a new chunk dies the mesh will be submitted
+	// to vbo by the main thread and the vector removed
 	GLuint vbo;
+	vector<Vertex> mesh;
+
 	ChnkNoise noise;
+	std::mutex isUsed;
 	bool generated = false;
 };
 
@@ -266,18 +274,21 @@ ChnkCoord chunkHasher(Pos3i &pos) {
 };
 
 // converts Position<uint> into a reference to an element in the noise array
-inline float& noiseAtPos(Pos3i pos) {
-	auto chnkHash = chunkHasher(pos);
-	auto &noise = chunkMap[chnkHash].noise;
-	auto x = glm::abs(pos.x % CHNK_SIZE);
-	auto y = glm::abs(pos.y % CHNK_SIZE);
-	auto z = glm::abs(pos.z % CHNK_SIZE);
+inline float& noiseAtPos(Pos3i pos, ChnkNoise &noise) {
+	//auto chnkHash = chunkHasher(pos);
+	//auto &chunk = chunkMap[chnkHash];
+	auto x = pos.x + 1;
+	auto y = pos.y + 1;
+	auto z = pos.z + 1;
 	return noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W));
 }
 
 // same as above + interpolation for floats
-inline float noiseAtPos(glm::vec3 pos) {
-	/* // interpolated
+inline float noiseAtPos(glm::vec3 pos, ChnkNoise &noise) {
+	// no interpolation (poormans normal)
+	return noiseAtPos(Pos3i{int(pos.x), int(pos.y), int(pos.z)}, noise);
+	/*
+	// interpolated
 	// pivot
 	glm::vec3 p0(int(pos.x), int(pos.y), int(pos.z));
 
@@ -287,9 +298,9 @@ inline float noiseAtPos(glm::vec3 pos) {
 	glm::vec3 pz = p0 + glm::vec3(0,0,1);
 
 	// samples
-	float sx = noiseAtPos(Pos3i{int(px.x), int(px.y), int(px.z)});
-	float sy = noiseAtPos(Pos3i{int(py.x), int(py.y), int(py.z)});
-	float sz = noiseAtPos(Pos3i{int(pz.x), int(pz.y), int(pz.z)});
+	float sx = noiseAtPos(Pos3i{int(px.x), int(px.y), int(px.z)}, noise );
+	float sy = noiseAtPos(Pos3i{int(py.x), int(py.y), int(py.z)}, noise );
+	float sz = noiseAtPos(Pos3i{int(pz.x), int(pz.y), int(pz.z)}, noise );
 
 	// distance 
 	float dx = glm::distance(px, pos);
@@ -297,9 +308,6 @@ inline float noiseAtPos(glm::vec3 pos) {
 	float dz = glm::distance(pz, pos);
 
 	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz); */
-
-	// no interpolation (poormans normal)
-	return noiseAtPos(Pos3i{int(pos.x), int(pos.y), int(pos.z)});
 }
 
 glm::vec3 interpolateVertex(Pos3i &v1, float val1, Pos3i &v2, float val2) {
@@ -313,43 +321,39 @@ glm::vec3 interpolateVertex(Pos3i &v1, float val1, Pos3i &v2, float val2) {
 	return ret;
 }
 
-glm::vec3 calculateNormal(glm::vec3 v1) {
+glm::vec3 calculateNormal(glm::vec3 v1, ChnkNoise &noise) {
 	// derivatives to figure out normal by using cross product
 	// v1 - position of THE VOXEL in world space based on the noise
-	float dx = noiseAtPos(v1 + glm::vec3(1, 0, 0)) - noiseAtPos(v1 + glm::vec3(-1, 0, 0));
-	float dy = noiseAtPos(v1 + glm::vec3(0,-1, 0)) - noiseAtPos(v1 + glm::vec3( 0, 1, 0));
-	float dz = noiseAtPos(v1 + glm::vec3(0, 0, 1)) - noiseAtPos(v1 + glm::vec3( 0, 0,-1));
+	float dx = noiseAtPos(v1 + glm::vec3(1, 0, 0), noise) - noiseAtPos(v1 + glm::vec3(-1, 0, 0), noise);
+	float dy = noiseAtPos(v1 + glm::vec3(0,-1, 0), noise) - noiseAtPos(v1 + glm::vec3( 0, 1, 0), noise);
+	float dz = noiseAtPos(v1 + glm::vec3(0, 0, 1), noise) - noiseAtPos(v1 + glm::vec3( 0, 0,-1), noise);
 	return -glm::normalize(glm::vec3(dx, -dy, dz));
 	//return glm::vec3(0,0,1);
 }
 
-vector<Vertex> genMesh(Pos3i &curr) {
-	LOG_INFO("Generating mesh...");
+vector<Vertex> genMesh(Pos3i &curr, ChnkNoise &noise) {
 	// cubes containing vertex information for entire chunk
 	array<vector<Vertex>, MAP_W * MAP_W * MAP_H> cubes;
 
 	auto timer = glfwGetTime();
 #pragma omp parallel for
-	for (int i = 0; i < (MAP_W * MAP_W * MAP_H); i++) {
-		int frac = i;
-		auto xz = frac % (MAP_W * MAP_W); // index on the <x,z> plane
-		Pos3i pos = {
-			.x = curr.x + xz % MAP_W,
-			.y = curr.y + frac / (MAP_W * MAP_W),
-			.z = curr.z + xz / MAP_W
+	for (int iter = 0; iter < (MAP_W * MAP_W * MAP_H); iter++) {
+		auto xz = iter % (MAP_W * MAP_W); // index on the <x,z> plane
+		Pos3i chunkPos = {
+			.x = xz % MAP_W,
+			.y = iter / (MAP_W * MAP_W),
+			.z = xz / MAP_W
 		};
-
 		// cube in binary: (v7, v6, v5, v4, v3, v2, v1, v0)
 		byte cube = 0x0;
 		// offset in binary: (z, y, x)
-		//auto isoValue = THRESHOLD + float(pos.y) / 16;
 		for (byte offset = 0b000; offset <= 0b111; offset++) {
 			Pos3i nPos = {
-				.x = pos.x + (offset & 0b001),
-				.y = pos.y + ((offset & 0b010) >> 1),
-				.z = pos.z + ((offset & 0b100) >> 2),
+				.x = chunkPos.x + (offset & 0b001),
+				.y = chunkPos.y + ((offset & 0b010) >> 1),
+				.z = chunkPos.z + ((offset & 0b100) >> 2),
 			};
-			float noiseVal = noiseAtPos(nPos);
+			float noiseVal = noiseAtPos(nPos, noise);
 			if (noiseVal > THRESHOLD) {
 				cube |= (1 << offset);
 			}
@@ -369,53 +373,44 @@ vector<Vertex> genMesh(Pos3i &curr) {
 
 			// position of the first vertex on the edge
 			auto v1 = Pos3i{
-				.x = pos.x + int((verts[0] & 0b001) >> 0),
-				.y = pos.y + int((verts[0] & 0b010) >> 1),
-				.z = pos.z + int((verts[0] & 0b100) >> 2)
+				.x = chunkPos.x + int((verts[0] & 0b001) >> 0),
+				.y = chunkPos.y + int((verts[0] & 0b010) >> 1),
+				.z = chunkPos.z + int((verts[0] & 0b100) >> 2)
 			};
 
 			// position of the second vertex on the edge
 			auto v2 = Pos3i{
-				.x = pos.x + int((verts[1] & 0b001) >> 0),
-				.y = pos.y + int((verts[1] & 0b010) >> 1),
-				.z = pos.z + int((verts[1] & 0b100) >> 2)
+				.x = chunkPos.x + int((verts[1] & 0b001) >> 0),
+				.y = chunkPos.y + int((verts[1] & 0b010) >> 1),
+				.z = chunkPos.z + int((verts[1] & 0b100) >> 2)
 			};
 
 			Vertex vertex;
 			// position of the interpolated vertex (based on the noise value at v1 and v2)
-			vertex.pos = interpolateVertex(v1, noiseAtPos(v1), v2, noiseAtPos(v2));
+			vertex.pos = interpolateVertex(v1, noiseAtPos(v1, noise), v2, noiseAtPos(v2, noise));
 			// interpolating the normal
-			vertex.norm = calculateNormal(vertex.pos);
+			vertex.norm = calculateNormal(vertex.pos, noise);
+			// adding worldspace shift
+			vertex.pos.x += curr.x;
+			vertex.pos.y += curr.y;
+			vertex.pos.z += curr.z;
 
-			cubes.at(i).push_back(vertex);
+			cubes.at(iter).push_back(vertex);
 		}
 	}
-	LOG_INFO("TIME GENERATING CHUNK: %f", glfwGetTime() - timer);
-
 	vector<Vertex> mesh;
 	for (auto &cube : cubes) {
 		mesh.insert(mesh.end(), cube.begin(), cube.end());
 	}
 	// copy elision so it shouldnt return by value
+	//LOG_INFO("size: %lu", mesh.size());
 	return mesh;
 }
 
-void genChunk(Pos3i &currPos, ShaderProgram *sp) {
-	auto hash = chunkHasher(currPos);
-
-	auto mesh = genMesh(currPos);
-	LOG_INFO("Mesh size: %lu", mesh.size());
-
-	GLuint vbo;
-	glGenBuffers(1, &vbo);
-	LOG_INFO("vbo: %i", vbo);
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
-         	(void*)mesh.data(), GL_STATIC_DRAW);
-
-	auto &chnk = chunkMap[hash];
+void genChunk(Pos3i &currPos, Chunk &chnk) {
+	auto mesh = genMesh(currPos, chnk.noise);
+	chnk.mesh = mesh;
 	chnk.indices = mesh.size();
-	chnk.vbo = vbo;
 	chnk.generated = true;
 }
 // -------------------------------------------------------
@@ -432,27 +427,23 @@ void saveNoisePNG(const char* fname, ChnkNoise &noise) {
 }
 
 
-ChnkNoise fillNoise(Pos3i &curr) {
-	LOG_INFO("Generating noise...");
+ChnkNoise genNoise(Pos3i &curr) {
 	ChnkNoise noise;
 	static SimplexNoise noiseGen(0.01f, 1.f, 2.f, 0.5f);
 	constexpr uint octaves = 8;
 	// noise generation
-	//
-	auto timer = glfwGetTime();
 #pragma omp parallel for
 	for (int y = 0; y < NOISE_H; y++) {
-		for (int z = 0; z <= MAP_W; z++) {
-			for (int x = 0; x <= MAP_W; x++) {
+		for (int z = 0; z < NOISE_W; z++) {
+			for (int x = 0; x < NOISE_W; x++) {
 				auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
-				auto val = noiseGen.fractal(octaves, pos.x, pos.y, pos.z);
+				auto val = noiseGen.fractal(octaves, pos.x -1, pos.y -1, pos.z -1);
 				val -= pos.y / 32.f;
-				noiseAtPos(pos) = val;
-				//noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
+				//noiseAtPos(pos) = val;
+				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 			}
 		}
 	}
-	LOG_INFO("TIME GENERATING NOISE: %f", glfwGetTime() - timer);
 	return noise;
 }
 
@@ -471,6 +462,12 @@ ChnkNoise fillall(Pos3i &curr) {
 	return noise;
 }
 
+void enqChunk(Pos3i cPos, Chunk *chnk) {
+	chnk->noise = genNoise(cPos);
+	genChunk(cPos, *chnk);
+	chnk->isUsed.unlock();
+}
+
 void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	sp->use();
 
@@ -483,14 +480,14 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
 
 
-	constexpr int CHNK_DIST = 1;
+	constexpr int CHNK_DIST = 3;
 
 	ImGui::Begin("DEBUG INFO");
 	ImGui::Text("x: %0.1f\n y: %0.1f\n z: %0.1f\n", camera.pos.x, camera.pos.y, camera.pos.z);
 	ImGui::Text("[%i %i %i]\n\n", currChnkPos.x, currChnkPos.y, currChnkPos.z);
 
 	for (int x = -CHNK_DIST; x <= CHNK_DIST; x++) {
-	for (int y = -CHNK_DIST; y <= CHNK_DIST; y++) {
+	for (int y = -CHNK_DIST / 2; y <= CHNK_DIST / 2; y++) {
 	for (int z = -CHNK_DIST; z <= CHNK_DIST; z++) {
 		Pos3i cPos = {
 			.x = (currChnkPos.x + x) * CHNK_SIZE,
@@ -503,18 +500,36 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 // 				cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE, hash); 
 
 		Chunk &chnk = chunkMap[hash];
-		if (!chnk.generated) {
-			LOG_INFO("Generating chunk [%i %i %i]...", cPos.x / CHNK_SIZE, 
-				cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE);
-			LOG_INFO("Hash: %lu", hash);
 
-			fillNoise(cPos);
-			genChunk(cPos, sp);
-			lastFrame = glfwGetTime();
+
+		if (chnk.isUsed.try_lock()) {
+			if (chnk.generated) {
+				// submitting the mesh to gpu
+				if (chnk.mesh.size() > 0) {
+					glBindBuffer(GL_ARRAY_BUFFER, chnk.vbo);
+					glBufferData(GL_ARRAY_BUFFER, chnk.indices * sizeof(Vertex),
+         					(void*)chnk.mesh.data(), GL_STATIC_DRAW);
+         			chnk.mesh.clear();
+         			// lag protection
+					lastFrame = glfwGetTime();
+				}
+				drawChunk(chnk, sp);
+				chnk.isUsed.unlock();
+			} else {
+				// vbo for the chunk
+				GLuint vbo;
+				glGenBuffers(1, &vbo);
+				chnk.vbo = vbo;
+				LOG_INFO("vbo: %i", vbo);
+
+				LOG_INFO("Generating chunk [%i %i %i]...\nHash: %lu", cPos.x / CHNK_SIZE, 
+					cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE, hash);
+				std::thread thread(enqChunk, cPos, &chnk);
+				thread.detach();
+				//enqChunk(cPos, &chnk);
+			}
 		}
-		drawChunk(chnk, sp);
 	}}}
-
 	ImGui::End();
 }
 
