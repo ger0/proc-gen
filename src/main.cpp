@@ -28,84 +28,22 @@
 #include "marchingcubes.hpp"
 #include "log.hpp"
 
-using byte = unsigned char;
-using uint = unsigned;
+#include "main.hpp"
 
 // unique_ptr alias
 template<typename... T>
 using Uniq_Ptr = std::unique_ptr<T...>;
 
-// temporary vector to be removed
-using std::array;
-using std::vector;
-
-constexpr const char* WINDOW_TITLE = "GLTRY";
-constexpr uint WINDOW_W = 800;
-constexpr uint WINDOW_H = 600;
-constexpr float ASPECT_RATIO = float(WINDOW_W) / WINDOW_H;
-constexpr float FOV = 90.f;
-
-// clipping distance
-constexpr float Z_NEAR = 0.1f;
-constexpr float Z_FAR = 256.f;
-
-// size of one chunk
-constexpr int CHNK_SIZE = 32;
-constexpr int MAP_W = CHNK_SIZE;
-constexpr int MAP_H = CHNK_SIZE;
-
-
-// size of the noise array 
-constexpr uint NOISE_W = MAP_W + 3;
-constexpr uint NOISE_H = MAP_H + 3;
-
-// iso
-constexpr float THRESHOLD = 0.f;
-
-
-template<typename T>
-struct Position {
-	T x;
-	T y;
-	T z;
-
-	Position<T> operator + (Position<T> &offset) {
-		Position<T> npos;
-		npos.x = x + offset.x;
-		npos.y = y + offset.y;
-		npos.z = z + offset.z;
-		return npos;
-	}
-
-	template<typename Y>
-	Position<T> offset(Y off_x, Y off_y, Y off_z) {
-		Position<T> npos;
-		npos.x = x + T(off_x);
-		npos.y = y + T(off_y);
-		npos.z = z + T(off_z);
-		return npos;
-	}
-};
-
-// world space coordinates
-using Pos3i = Position<int>;
-
 // [TODO]: remove later
 Pos3i currChnkPos;
 
 GLuint vao;
-std::mutex glCriticalSection;
 
 float deltaTime = 0.f;
 float lastFrame = 0.f;
 
 // mouse position
 Position<float> mouseLast;
-
-struct Vertex {
-	glm::vec3 pos;
-	glm::vec3 norm;
-};
 
 using ChnkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
 
@@ -205,9 +143,9 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int act, int mod) {
     	camera.pos += 
     		glm::normalize(glm::cross(camera.target, camera.up)) * speed;
 
-	currChnkPos.x = glm::floor(camera.pos.x / CHNK_SIZE);
-	currChnkPos.y = glm::floor(camera.pos.y / CHNK_SIZE);
-	currChnkPos.z = glm::floor(camera.pos.z / CHNK_SIZE);
+	currChnkPos.x = glm::floor(camera.pos.x / CHK_SIZE);
+	currChnkPos.y = glm::floor(camera.pos.y / CHK_SIZE);
+	currChnkPos.z = glm::floor(camera.pos.z / CHK_SIZE);
 }
 
 // DEBUGGING INFO
@@ -236,7 +174,7 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	glDepthFunc(GL_LESS);
 
 	glEnable(GL_CULL_FACE);
-	glCullFace(GL_BACK);
+	glCullFace(GL_FRONT);
 
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glClearColor(0.45, 0.716, 0.914, 1.f);
@@ -264,9 +202,9 @@ int pFail(const char *message) {
 // position must be 16bit integer otherwise crashiento
 // returns 64bit uint containing position of the chunk
 ChnkCoord chunkHasher(Pos3i &pos) {
-	ChnkCoord x = glm::floor(pos.x / CHNK_SIZE);
-	ChnkCoord y = glm::floor(pos.y / CHNK_SIZE);
-	ChnkCoord z = glm::floor(pos.z / CHNK_SIZE);
+	ChnkCoord x = glm::floor(pos.x / CHK_SIZE);
+	ChnkCoord y = glm::floor(pos.y / CHK_SIZE);
+	ChnkCoord z = glm::floor(pos.z / CHK_SIZE);
 	x = x << 0;
 	z = z << 16;
 	y = y << 32;
@@ -283,127 +221,106 @@ inline float& noiseAtPos(Pos3i pos, ChnkNoise &noise) {
 	return noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W));
 }
 
+float trilinearInterp(Vec3f pos, float vals[8]) {
+  auto &x = pos.x;
+  auto &y = pos.y;
+  auto &z = pos.z;
+
+  // Calculate the weights for each of the 8 input values
+  float wx = 1 - std::abs(x - std::floor(x));
+  float wy = 1 - std::abs(y - std::floor(y));
+  float wz = 1 - std::abs(z - std::floor(z));
+
+  // Calculate the weighted average of the 8 input values
+  float result = 0;
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      for (int k = 0; k < 2; k++) {
+        float weight = wx * wy * wz;
+        result += vals[4 * i + 2 * j + k] * weight;
+        wz = 1 - wz;
+      }
+      wy = 1 - wy;
+    }
+    wx = 1 - wx;
+  }
+  return result;
+}
+
+
 // same as above + interpolation for floats
 inline float noiseAtPos(glm::vec3 pos, ChnkNoise &noise) {
 	// no interpolation (poormans normal)
-	return noiseAtPos(Pos3i{int(pos.x), int(pos.y), int(pos.z)}, noise);
-	/*
-	// interpolated
-	// pivot
-	glm::vec3 p0(int(pos.x), int(pos.y), int(pos.z));
-
-	// shifted vectors for sampling
-	glm::vec3 px = p0 + glm::vec3(1,0,0);
-	glm::vec3 py = p0 + glm::vec3(0,1,0);
-	glm::vec3 pz = p0 + glm::vec3(0,0,1);
-
-	// samples
-	float sx = noiseAtPos(Pos3i{int(px.x), int(px.y), int(px.z)}, noise );
-	float sy = noiseAtPos(Pos3i{int(py.x), int(py.y), int(py.z)}, noise );
-	float sz = noiseAtPos(Pos3i{int(pz.x), int(pz.y), int(pz.z)}, noise );
-
-	// distance 
-	float dx = glm::distance(px, pos);
-	float dy = glm::distance(py, pos);
-	float dz = glm::distance(pz, pos);
-
-	return (dx*sx + dy*sy + dz*sz) / (dx + dy + dz); */
-}
-
-glm::vec3 interpolateVertex(Pos3i &v1, float val1, Pos3i &v2, float val2) {
-	// finding a 0 
-	glm::vec3 ret;
-	// coefficient
-	float mu = (THRESHOLD - val1) / (val2 - val1);
-	ret.x = mu*((int)v2.x - (int)v1.x) + v1.x;
-	ret.y = mu*((int)v2.y - (int)v1.y) + v1.y;
-	ret.z = mu*((int)v2.z - (int)v1.z) + v1.z;
-	return ret;
+	//return noiseAtPos(Pos3i{int(pos.x), int(pos.y), int(pos.z)}, noise);
+    Vec3f b = floor(pos);
+    Vec3f u = ceil(pos);
+    float v[8];
+    v[0] = noiseAtPos(Pos3i{(int)b.x, (int)b.y, (int)b.z}, noise);
+    v[1] = noiseAtPos(Pos3i{(int)u.x, (int)b.y, (int)b.z}, noise);
+    v[2] = noiseAtPos(Pos3i{(int)b.x, (int)u.y, (int)b.z}, noise);
+    v[3] = noiseAtPos(Pos3i{(int)u.x, (int)u.y, (int)b.z}, noise);
+    v[4] = noiseAtPos(Pos3i{(int)b.x, (int)b.y, (int)u.z}, noise);
+    v[5] = noiseAtPos(Pos3i{(int)u.x, (int)b.y, (int)u.z}, noise);
+    v[6] = noiseAtPos(Pos3i{(int)b.x, (int)u.y, (int)u.z}, noise);
+    v[7] = noiseAtPos(Pos3i{(int)u.x, (int)u.y, (int)u.z}, noise);
+    return trilinearInterp(pos, v);
 }
 
 glm::vec3 calculateNormal(glm::vec3 v1, ChnkNoise &noise) {
 	// derivatives to figure out normal by using cross product
-	// v1 - position of THE VOXEL in world space based on the noise
-	float dx = noiseAtPos(v1 + glm::vec3(1, 0, 0), noise) - noiseAtPos(v1 + glm::vec3(-1, 0, 0), noise);
-	float dy = noiseAtPos(v1 + glm::vec3(0,-1, 0), noise) - noiseAtPos(v1 + glm::vec3( 0, 1, 0), noise);
-	float dz = noiseAtPos(v1 + glm::vec3(0, 0, 1), noise) - noiseAtPos(v1 + glm::vec3( 0, 0,-1), noise);
-	return -glm::normalize(glm::vec3(dx, -dy, dz));
+	// v1 - position of vertex in world space based on the noise
+	Vec3f norm;
+	norm.x = noiseAtPos(v1 + glm::vec3(1, 0, 0), noise) - noiseAtPos(v1 + glm::vec3(-1, 0, 0), noise);
+	norm.y = noiseAtPos(v1 + glm::vec3(0, 1, 0), noise) - noiseAtPos(v1 + glm::vec3( 0,-1, 0), noise);
+	norm.z = noiseAtPos(v1 + glm::vec3(0, 0, 1), noise) - noiseAtPos(v1 + glm::vec3( 0, 0,-1), noise);
+	return -glm::normalize(norm);
 	//return glm::vec3(0,0,1);
 }
 
 vector<Vertex> genMesh(Pos3i &curr, ChnkNoise &noise) {
 	// cubes containing vertex information for entire chunk
 	array<vector<Vertex>, MAP_W * MAP_W * MAP_H> cubes;
-
-	auto timer = glfwGetTime();
 #pragma omp parallel for
 	for (int iter = 0; iter < (MAP_W * MAP_W * MAP_H); iter++) {
 		auto xz = iter % (MAP_W * MAP_W); // index on the <x,z> plane
-		Pos3i chunkPos = {
+		Pos3i cubePos = {
 			.x = xz % MAP_W,
 			.y = iter / (MAP_W * MAP_W),
 			.z = xz / MAP_W
 		};
-		// cube in binary: (v7, v6, v5, v4, v3, v2, v1, v0)
-		byte cube = 0x0;
-		// offset in binary: (z, y, x)
-		for (byte offset = 0b000; offset <= 0b111; offset++) {
+		array<float, 8> cubevals;
+		for (uint i = 0; i < 8; i++) {
 			Pos3i nPos = {
-				.x = chunkPos.x + (offset & 0b001),
-				.y = chunkPos.y + ((offset & 0b010) >> 1),
-				.z = chunkPos.z + ((offset & 0b100) >> 2),
+				.x = cubePos.x + (int)marching_cubes_offsets[i].x,
+				.y = cubePos.y + (int)marching_cubes_offsets[i].y,
+				.z = cubePos.z + (int)marching_cubes_offsets[i].z,
 			};
-			float noiseVal = noiseAtPos(nPos, noise);
-			if (noiseVal > THRESHOLD) {
-				cube |= (1 << offset);
-			}
+			cubevals[i] = noiseAtPos(nPos, noise);
 		}
-		auto mask = march_cubes::EdgeMasks.at(cube);
+		vector<Vertex> verts;
+		polygonise(cubevals, verts);
+		for (auto &vert : verts) {
+			// chunkwise shift
+			vert.pos.x += cubePos.x;
+			vert.pos.y += cubePos.y;
+			vert.pos.z += cubePos.z;
 
-		// array of triplets of the cube edges, each triplet = 1 triangle
-		auto edges = march_cubes::TriangleTable.at(cube);
-		
-		for (uint& edge : edges) {
-			// check if theres no more edges left
-			if (edge == march_cubes::x) {
-				break;
-			}
+			vert.norm = calculateNormal(vert.pos, noise);
 
-			auto verts = march_cubes::EdgeVertexIndices.at(edge);
-
-			// position of the first vertex on the edge
-			auto v1 = Pos3i{
-				.x = chunkPos.x + int((verts[0] & 0b001) >> 0),
-				.y = chunkPos.y + int((verts[0] & 0b010) >> 1),
-				.z = chunkPos.z + int((verts[0] & 0b100) >> 2)
-			};
-
-			// position of the second vertex on the edge
-			auto v2 = Pos3i{
-				.x = chunkPos.x + int((verts[1] & 0b001) >> 0),
-				.y = chunkPos.y + int((verts[1] & 0b010) >> 1),
-				.z = chunkPos.z + int((verts[1] & 0b100) >> 2)
-			};
-
-			Vertex vertex;
-			// position of the interpolated vertex (based on the noise value at v1 and v2)
-			vertex.pos = interpolateVertex(v1, noiseAtPos(v1, noise), v2, noiseAtPos(v2, noise));
-			// interpolating the normal
-			vertex.norm = calculateNormal(vertex.pos, noise);
 			// adding worldspace shift
-			vertex.pos.x += curr.x;
-			vertex.pos.y += curr.y;
-			vertex.pos.z += curr.z;
+			vert.pos.x += curr.x;
+			vert.pos.y += curr.y;
+			vert.pos.z += curr.z;
 
-			cubes.at(iter).push_back(vertex);
+			cubes.at(iter).push_back(vert);
 		}
 	}
 	vector<Vertex> mesh;
+	uint constexpr MAX_MESH_VERTS = 12 * CHK_SIZE * CHK_SIZE * CHK_SIZE * 3;
+	mesh.reserve(MAX_MESH_VERTS);
 	for (auto &cube : cubes) {
 		mesh.insert(mesh.end(), cube.begin(), cube.end());
 	}
-	// copy elision so it shouldnt return by value
-	//LOG_INFO("size: %lu", mesh.size());
 	return mesh;
 }
 
@@ -429,7 +346,7 @@ void saveNoisePNG(const char* fname, ChnkNoise &noise) {
 
 ChnkNoise genNoise(Pos3i &curr) {
 	ChnkNoise noise;
-	static SimplexNoise noiseGen(0.01f, 1.f, 2.f, 0.5f);
+	SimplexNoise noiseGen(0.01f, 1.f, 2.f, 0.5f);
 	constexpr uint octaves = 8;
 	// noise generation
 #pragma omp parallel for
@@ -451,10 +368,12 @@ ChnkNoise fillall(Pos3i &curr) {
 	LOG_INFO("Generating noise...");
 	ChnkNoise noise;
 	// noise generation
+#pragma omp parallel for
 	for (int y = 0; y < NOISE_H; y++) {
-		for (int z = 0; z <= MAP_W; z++) {
-			for (int x = 0; x <= MAP_W; x++) {
-				auto val = 1.f;
+		for (int z = 0; z < NOISE_W; z++) {
+			for (int x = 0; x < NOISE_W; x++) {
+				auto val = -1;
+				val += (x * x  + y * y + z * z) / float(32 * 32 * 32);
 				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 			}
 		}
@@ -464,6 +383,7 @@ ChnkNoise fillall(Pos3i &curr) {
 
 void enqChunk(Pos3i cPos, Chunk *chnk) {
 	chnk->noise = genNoise(cPos);
+	//chnk->noise = fillall(cPos);
 	genChunk(cPos, *chnk);
 	chnk->isUsed.unlock();
 }
@@ -490,9 +410,9 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	for (int y = -CHNK_DIST / 2; y <= CHNK_DIST / 2; y++) {
 	for (int z = -CHNK_DIST; z <= CHNK_DIST; z++) {
 		Pos3i cPos = {
-			.x = (currChnkPos.x + x) * CHNK_SIZE,
-			.y = (currChnkPos.y + y) * CHNK_SIZE,
-			.z = (currChnkPos.z + z) * CHNK_SIZE
+			.x = (currChnkPos.x + x) * CHK_SIZE,
+			.y = (currChnkPos.y + y) * CHK_SIZE,
+			.z = (currChnkPos.z + z) * CHK_SIZE
 		};
 		auto hash = chunkHasher(cPos);
 
@@ -520,10 +440,11 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 				GLuint vbo;
 				glGenBuffers(1, &vbo);
 				chnk.vbo = vbo;
-				LOG_INFO("vbo: %i", vbo);
+				lastFrame = glfwGetTime();
+				//LOG_INFO("vbo: %i", vbo);
 
-				LOG_INFO("Generating chunk [%i %i %i]...\nHash: %lu", cPos.x / CHNK_SIZE, 
-					cPos.y / CHNK_SIZE, cPos.z / CHNK_SIZE, hash);
+				//LOG_INFO("Generating chunk [%i %i %i]...\nHash: %lu", cPos.x / CHK_SIZE, 
+					//cPos.y / CHK_SIZE, cPos.z / CHK_SIZE, hash);
 				std::thread thread(enqChunk, cPos, &chnk);
 				thread.detach();
 				//enqChunk(cPos, &chnk);
