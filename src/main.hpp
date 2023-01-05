@@ -5,13 +5,10 @@
 #include <vector>
 
 using std::array;
+
 using byte = uint8_t;
-
-
-using byte = unsigned char;
 using uint = unsigned;
 
-// temporary vector to be removed
 using std::array;
 using std::vector;
 
@@ -30,6 +27,7 @@ constexpr int CHK_SIZE = 32;
 constexpr int MAP_W = CHK_SIZE;
 constexpr int MAP_H = CHK_SIZE;
 
+constexpr int RENDER_DIST = 6;
 
 // size of the noise array 
 constexpr uint NOISE_W = MAP_W + 3;
@@ -69,5 +67,6 @@ using Vec3f = glm::vec3;
 struct Vertex {
 	glm::vec3 pos;
 	glm::vec3 norm;
+	glm::vec4 color;
 };
 

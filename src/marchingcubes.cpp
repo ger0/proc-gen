@@ -303,7 +303,7 @@ constexpr char triTable[256][16] = {
     {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}
 };
 
-Vec3f vertInterp(const Vec3f &p1,const Vec3f &p2, float valp1, float valp2)
+Vec3f vertInterp(const Vec3f &p1,const Vec3f &p2, float &valp1, float &valp2)
 {
 	return (p1 + (-valp1 / (valp2 - valp1)) * (p2 - p1));
 }
