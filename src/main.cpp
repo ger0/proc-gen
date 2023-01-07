@@ -30,15 +30,16 @@
 
 #include "main.hpp"
 
-// color of the water
-glm::vec4 waterColor(0.25, 0.516, 0.914, 0.46);
-
 // unique_ptr alias
 template<typename... T>
 using Uniq_Ptr = std::unique_ptr<T...>;
 
 // [TODO]: remove later
 Pos3i currChkPos;
+
+// colours
+glm::vec4 waterColor(0.25, 0.516, 0.914, 0.46);
+glm::vec3 skyColor(0.45, 0.716, 0.914);
 
 GLuint vao;
 
@@ -48,8 +49,14 @@ float lastFrame = 0.f;
 // mouse position
 Position<float> mouseLast;
 
+// used for hashing
+using ChkCoord = uint64_t;
+
 using ChkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
-using ChkHmap = array<float, NOISE_W * NOISE_W>;
+// heightmap
+using HeightMap = array<float, NOISE_W * NOISE_W>;
+// biome map (temporary // more biomes tbd)
+using SmoothMap = array<float, NOISE_W * NOISE_W>;
 
 // ------------------------- chunks ----------------------
 struct Chunk {
@@ -67,10 +74,16 @@ struct Chunk {
 	bool generated = false;
 };
 
-// used for hashing
-using ChkCoord = uint64_t;
+struct BiomeChunk {
+	// storage for biometype
+	SmoothMap smoothMap;
+};
 
+// storage for chunks
 std::unordered_map<ChkCoord, Chunk> chunkMap;
+std::unordered_map<ChkCoord, BiomeChunk> biomeMap;
+// storage for worldspace heightmap
+std::unordered_map<ChkCoord, HeightMap> heightMap;
 
 struct Camera {
 	glm::vec3 pos = glm::vec3(0.f, 0.f, 3.f);
@@ -195,7 +208,8 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	glEnable(GL_BLEND);  
 
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glClearColor(0.45, 0.716, 0.914, 1.f);
+	glClearColor(skyColor.r, skyColor.g, skyColor.b, 1.f);
+	//glClearColor(0.45, 0.716, 0.914, 1.f);
 
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwSetCursorPosCallback(window, mouseCallback);
@@ -204,6 +218,8 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 	glfwSetWindowSizeCallback(window, windowResizeCallback);
 
 	ShaderProgram* sp = new ShaderProgram("glsl/vshad.glsl", "glsl/fshad.glsl");
+	sp->use();
+	glUniform3fvARB(sp->u("skyColor"), 1, glm::value_ptr(skyColor));
 
 	// generating buffers
 	glGenVertexArrays(1, &vao);
@@ -293,10 +309,11 @@ glm::vec3 calculateNormal(glm::vec3 v1, ChkNoise &noise) {
 	//return glm::vec3(0,0,1);
 }
 
-vector<Vertex> genMesh(Pos3i &curr, ChkNoise &noise) {
+void genMesh(Pos3i &curr, Chunk* chk) {
 	// cubes containing vertex information for entire chunk
-	//array<vector<Vertex>, MAP_W * MAP_W * MAP_H> cubes;
-	vector<Vertex> mesh;
+	auto &noise = chk->noise;
+	auto &mesh  = chk->mesh;
+	//vector<Vertex> mesh;
 	uint constexpr MAX_MESH_VERTS = 12 * CHK_SIZE * CHK_SIZE * CHK_SIZE * 3;
 	mesh.reserve(MAX_MESH_VERTS);
 //#pragma omp parallel for
@@ -343,8 +360,8 @@ vector<Vertex> genMesh(Pos3i &curr, ChkNoise &noise) {
 			if (vert.pos.y < -2.f) vert.color = 
 				colSand - glm::vec4(colMask, 0.f) * std::max(glm::abs(vert.pos.y / 4), 1.f);
 			else if (vert.pos.y <= 2.f) vert.color = colSand; 
-			else if (vert.pos.y <= 32.f) vert.color = colGrass;
-			else vert.color = colRock;
+			//else if (vert.pos.y <= 32.f) vert.color = colGrass;
+			else vert.color = colGrass;
 
 			//vert.color = glm::vec4(0.01, 0.07, 0.0, 1.f);
 
@@ -358,7 +375,7 @@ vector<Vertex> genMesh(Pos3i &curr, ChkNoise &noise) {
 		}
 	}
 	mesh.shrink_to_fit();
-	return mesh;
+	//return mesh;
 }
 // -------------------------------------------------------
 
@@ -373,10 +390,16 @@ void saveNoisePNG(const char* fname, ChkNoise &noise) {
 			NOISE_W, NOISE_W, LCT_GREY, 8);
 }
 
-ChkNoise genNoise(Pos3i &curr) {
-	ChkNoise noise;
+// generates 3D noise for use inside the chunk
+void genNoise(Pos3i &curr, Chunk *chk) {
+	ChkNoise &noise = chk->noise;
+	float heightCutoff = curr.y - 24.f;
+
+	// sample: (right - left) / CHK_SIZE = step
+	// start = left
+
 	//float freq = curr.x == 0 ? 0.1f : 0.1f / curr.x;
-	uint octaves = 6;
+	uint octaves = 9;
 	SimplexNoise noiseGen(0.004f, 1.f, 2.f, 0.5f);
 	// noise generation
 //#pragma omp parallel for
@@ -385,10 +408,24 @@ ChkNoise genNoise(Pos3i &curr) {
 			for (int x = 0; x < NOISE_W; x++) {
 				auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
 				auto val = noiseGen.fractal(octaves, pos.x -1, pos.y -1, pos.z -1);
-				val -= (pos.y - 8.f) / 24.f;
+				val -= (pos.y - 24.f) / 64.f;
 				//noiseAtPos(pos, noise) = val;
 				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 			}
+		}
+	}
+	//return noise;
+}
+
+HeightMap genHmap(Pos3i &curr) {
+	HeightMap noise;
+	uint octaves = 9;
+	static SimplexNoise hmapGen(0.001f, 1.f, 2.f, 0.5f);
+	// noise generation
+	for (int z = 0; z < NOISE_W; z++) {
+		for (int x = 0; x < NOISE_W; x++) {
+			auto val = hmapGen.fractal(octaves, x + curr.x -1, z + curr.z -1);
+			noise.at(x + z * NOISE_W) = val;
 		}
 	}
 	return noise;
@@ -413,8 +450,9 @@ ChkNoise genNoiseFill(Pos3i &curr) {
 
 // generates chunk data for the Chunk passed as an argument
 void genChunk(Pos3i cPos, Chunk *chk) {
-	chk->noise     = genNoise(cPos);
-	chk->mesh      = genMesh(cPos, chk->noise);
+	// check if theres a heightmap available
+	genNoise(cPos, chk);
+	genMesh(cPos, chk);
 	chk->indices   = chk->mesh.size();
 	chk->generated = true;
 
@@ -460,11 +498,11 @@ void genWater() {
 	auto X = float(4 * RENDER_DIST * CHK_SIZE);
 	const array<Vertex, 3 * 2> verts = {
 		Vertex{{-X,0,-X},{0,1,0}, waterColor},
-		Vertex{{X,0,X},{0,1,0}, waterColor},
-		Vertex{{-X,0,X},{0,1,0}, waterColor},
+		Vertex{{ X,0, X},{0,1,0}, waterColor},
+		Vertex{{-X,0, X},{0,1,0}, waterColor},
 		Vertex{{-X,0,-X},{0,1,0}, waterColor},
-		Vertex{{X,0,-X},{0,1,0}, waterColor},
-		Vertex{{X,0,X},{0,1,0}, waterColor}
+		Vertex{{ X,0,-X},{0,1,0}, waterColor},
+		Vertex{{ X,0, X},{0,1,0}, waterColor}
 	};
 	glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex),
          	(void*)verts.data(), GL_STATIC_DRAW);

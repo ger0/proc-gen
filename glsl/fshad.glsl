@@ -1,12 +1,15 @@
 #version 330
 precision mediump float;
 
-vec3 lightPos = vec3(0, 0, -1);
-in vec3 iNormal;
-in vec3 vertPos;
-in vec4 iColor;
+vec3     lightPos = vec3(0, 0, -1);
+in vec3  iNormal;
+in vec3  vertPos;
+in vec4  iColor;
+in vec3  surfNormal;
+in float visibility;
 
 uniform int mode;
+uniform vec3 skyColor;
 
 const vec3 lightColor = vec3(0.5, 0.5, 0.4);
 const float lightPower = 0.25;
@@ -19,6 +22,12 @@ const float screenGamma = 2.2; // Assume the monitor is calibrated to the sRGB c
 void main() {
 	ambientColor = iColor.rgb;
 	vec3 normal = normalize(iNormal);
+
+	vec3 up = vec3(0,1,0);
+	float classify = dot(surfNormal, up);
+	if (classify < 0.2) ambientColor = vec3(0.07,  0.07, 0.07);
+	else if (classify < 0.4) ambientColor = vec3(0.07,  0.04, 0.005);
+
 	vec3 lightDir = lightPos - vertPos;
 	float distance = length(lightDir);
 	distance = distance * distance;
@@ -50,5 +59,7 @@ void main() {
 	// have been linearized, i.e. have no gamma correction in them)
 	vec3 colorGammaCorrected = pow(colorLinear, vec3(1.0 / screenGamma));
 	// use the gamma corrected color in the fragment
-	gl_FragColor = vec4(colorGammaCorrected, iColor.a);
+	// mix with fog
+	vec3 outColor = mix(skyColor, colorGammaCorrected, visibility);
+	gl_FragColor = vec4(outColor, iColor.a);
 }
