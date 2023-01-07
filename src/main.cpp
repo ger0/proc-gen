@@ -16,7 +16,8 @@
 #include <memory>
 #include <unordered_map>
 
-//#include <omp.h>
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/post.hpp>
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_glfw.h"
@@ -29,6 +30,8 @@
 #include "log.hpp"
 
 #include "main.hpp"
+
+boost::asio::thread_pool pool(std::thread::hardware_concurrency() - 1);
 
 // unique_ptr alias
 template<typename... T>
@@ -316,7 +319,6 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 	//vector<Vertex> mesh;
 	uint constexpr MAX_MESH_VERTS = 12 * CHK_SIZE * CHK_SIZE * CHK_SIZE * 3;
 	mesh.reserve(MAX_MESH_VERTS);
-//#pragma omp parallel for
 	for (int iter = 0; iter < (MAP_W * MAP_W * MAP_H); iter++) {
 		auto xz = iter % (MAP_W * MAP_W); // index on the <x,z> plane
 		Pos3i cubePos = {
@@ -402,7 +404,6 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 	uint octaves = 9;
 	SimplexNoise noiseGen(0.004f, 1.f, 2.f, 0.5f);
 	// noise generation
-//#pragma omp parallel for
 	for (int y = 0; y < NOISE_H; y++) {
 		for (int z = 0; z < NOISE_W; z++) {
 			for (int x = 0; x < NOISE_W; x++) {
@@ -435,7 +436,6 @@ HeightMap genHmap(Pos3i &curr) {
 ChkNoise genNoiseFill(Pos3i &curr) {
 	ChkNoise noise;
 	// noise generation
-//#pragma omp parallel for
 	for (int y = 0; y < NOISE_H; y++) {
 		for (int z = 0; z < NOISE_W; z++) {
 			for (int x = 0; x < NOISE_W; x++) {
@@ -543,8 +543,6 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 					glBufferData(GL_ARRAY_BUFFER, chk.indices * sizeof(Vertex),
          					(void*)chk.mesh.data(), GL_STATIC_DRAW);
          			chk.mesh.clear();
-         			// lag protection
-					lastFrame = glfwGetTime();
 				}
 				drawChunk(chk, sp);
 				chk.isUsed.unlock();
@@ -553,13 +551,10 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 				GLuint vbo;
 				glGenBuffers(1, &vbo);
 				chk.vbo = vbo;
-				lastFrame = glfwGetTime();
 
 				//LOG_INFO("Generating chunk [%i %i %i]...\nHash: %lu", cPos.x / CHK_SIZE, 
 					//cPos.y / CHK_SIZE, cPos.z / CHK_SIZE, hash);
-				std::thread thread(genChunk, cPos, &chk);
-				thread.detach();
-				//enqChunk(cPos, &chk);
+				boost::asio::post(pool, std::bind(genChunk, cPos, &chk));
 			}
 		}
 	}}}
@@ -647,4 +642,7 @@ int main() {
 
 		glfwSwapBuffers(window.get());
 	}
+	LOG_INFO("Closing the program...");
+	pool.stop();
+	pool.join();
 }
