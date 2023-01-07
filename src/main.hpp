@@ -27,7 +27,7 @@ constexpr int CHK_SIZE = 32;
 constexpr int MAP_W = CHK_SIZE;
 constexpr int MAP_H = CHK_SIZE;
 
-constexpr int RENDER_DIST = 4;
+constexpr int RENDER_DIST = 5;
 
 // size of the noise array 
 constexpr uint NOISE_W = MAP_W + 3;
@@ -56,6 +56,22 @@ struct Position {
 		npos.x = x + T(off_x);
 		npos.y = y + T(off_y);
 		npos.z = z + T(off_z);
+		return npos;
+	}
+
+	Position<T> operator / (int div) {
+		Position<T> npos;
+		npos.x = x / div;
+		npos.y = y / div;
+		npos.z = z / div;
+		return npos;
+	}
+
+	Position<T> operator * (int div) {
+		Position<T> npos;
+		npos.x = x * div;
+		npos.y = y * div;
+		npos.z = z * div;
 		return npos;
 	}
 };

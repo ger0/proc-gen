@@ -10,6 +10,7 @@
 
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 
 #include <vector>
 #include <array>
@@ -56,12 +57,30 @@ Position<float> mouseLast;
 using ChkCoord = uint64_t;
 
 using ChkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
-// heightmap
-using HeightMap = array<float, NOISE_W * NOISE_W>;
 // biome map (temporary // more biomes tbd)
 using SmoothMap = array<float, NOISE_W * NOISE_W>;
 
+enum JobState {
+	none,
+	delegated,
+	awaiting,
+	generated
+};
+
+// critical section - thread synchronization
+std::mutex mtx;
+
 // ------------------------- chunks ----------------------
+struct HeightMapChunk {
+	std::atomic<JobState> state = ATOMIC_VAR_INIT(JobState::none);
+	// heightmap
+	static constexpr int width = CHK_SIZE + 1;
+	array<float, width * width> noise;
+	float& at(int x, int z) {
+		return noise.at(x + z * width);
+	}
+};
+
 struct Chunk {
 	// mesh vertex size
 	size_t indices = 0;
@@ -72,9 +91,7 @@ struct Chunk {
 
 	// 3D noise used for terrain generation
 	ChkNoise noise;
-
-	std::mutex isUsed;
-	bool generated = false;
+	std::atomic<JobState> state = ATOMIC_VAR_INIT(JobState::none);
 };
 
 struct BiomeChunk {
@@ -86,11 +103,11 @@ struct BiomeChunk {
 std::unordered_map<ChkCoord, Chunk> chunkMap;
 std::unordered_map<ChkCoord, BiomeChunk> biomeMap;
 // storage for worldspace heightmap
-std::unordered_map<ChkCoord, HeightMap> heightMap;
+std::unordered_map<ChkCoord, HeightMapChunk> heightMap;
 
 struct Camera {
-	glm::vec3 pos = glm::vec3(0.f, 0.f, 3.f);
-	glm::vec3 target = glm::vec3(0.f, 0.f, 0.f);
+	glm::vec3 pos = glm::vec3(0.f, 3.f, 3.f);
+	glm::vec3 target = glm::vec3(0.f, 3.f, 0.f);
 	glm::vec3 dir = glm::normalize(pos - target);
 
 	const float speed = 0.05f;
@@ -353,14 +370,16 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 			vert.pos.y += curr.y;
 			vert.pos.z += curr.z;
 
-			constexpr glm::vec3 colMask(0.15,  0.15, 0.03);
+			constexpr glm::vec3 colMask(0.26,  0.26, 0.03);
 			constexpr glm::vec4 colSand(0.27,  0.27, 0.07, 1.0);
 			constexpr glm::vec4 colGrass(0.01, 0.07, 0.0,  1.0);
 			constexpr glm::vec4 colRock(0.07,  0.07, 0.07, 1.0);
 
-			// only temporary 
-			if (vert.pos.y < -2.f) vert.color = 
-				colSand - glm::vec4(colMask, 0.f) * std::max(glm::abs(vert.pos.y / 4), 1.f);
+			// TODO: remove,  only temporary 
+			if (vert.pos.y < -2.f) {
+				auto scal = std::min(std::max(-(vert.pos.y + 2.f) / 8.f, 0.f), 1.f);
+				vert.color = colSand - glm::vec4(colMask, 0.f) * scal;
+			}
 			else if (vert.pos.y <= 2.f) vert.color = colSand; 
 			//else if (vert.pos.y <= 32.f) vert.color = colGrass;
 			else vert.color = colGrass;
@@ -392,44 +411,101 @@ void saveNoisePNG(const char* fname, ChkNoise &noise) {
 			NOISE_W, NOISE_W, LCT_GREY, 8);
 }
 
-// generates 3D noise for use inside the chunk
-void genNoise(Pos3i &curr, Chunk *chk) {
-	ChkNoise &noise = chk->noise;
-	float heightCutoff = curr.y - 24.f;
+// [TODO:] seed consistency concern
+SimplexNoise hmapGen(0.001f, 1.f, 2.f, 0.5f);
+// checks if a heightmap for the position has been generated, 
+// if not then generate it and make other threads trying to 
+// access that heightmap wait until its finished
+HeightMapChunk& updateHeightmap(Pos3i &curr) {
+	// coordinates shifted to chunk origin point
+	Pos3i chkCoord;
+	chkCoord.x = glm::floor((float)curr.x / CHK_SIZE) * CHK_SIZE;
+	chkCoord.z = glm::floor((float)curr.z / CHK_SIZE) * CHK_SIZE;
+	chkCoord.y = 0;
 
-	// sample: (right - left) / CHK_SIZE = step
-	// start = left
+	if (heightMap.count(chunkHasher(chkCoord)) != 0) return heightMap[chunkHasher(chkCoord)];
+	// else
 
-	//float freq = curr.x == 0 ? 0.1f : 0.1f / curr.x;
-	uint octaves = 9;
-	SimplexNoise noiseGen(0.004f, 1.f, 2.f, 0.5f);
-	// noise generation
-	for (int y = 0; y < NOISE_H; y++) {
-		for (int z = 0; z < NOISE_W; z++) {
-			for (int x = 0; x < NOISE_W; x++) {
-				auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
-				auto val = noiseGen.fractal(octaves, pos.x -1, pos.y -1, pos.z -1);
-				val -= (pos.y - 24.f) / 64.f;
-				//noiseAtPos(pos, noise) = val;
-				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
+	mtx.lock();
+	HeightMapChunk &hm = heightMap[chunkHasher(chkCoord)];
+	if (hm.state == JobState::none) {
+		hm.state = JobState::delegated;
+		LOG_INFO("Generating heightmap...origin: %d %d, hash: %lu", 
+				chkCoord.x, chkCoord.z, chunkHasher(chkCoord));
+		uint octaves = 5;
+		// noise generation
+		for (int z = 0; z < hm.width; z++) {
+			for (int x = 0; x < hm.width; x++) {
+				auto val = hmapGen.fractal(octaves, x + chkCoord.x, z + chkCoord.z);
+				// coordinates based on chkCoordently loaded heightmap chunk
+				hm.at(x, z) = 12.f + val * 24.f;
 			}
 		}
+		hm.state = JobState::generated;
 	}
-	//return noise;
+	mtx.unlock();
+	return hm;
 }
 
-HeightMap genHmap(Pos3i &curr) {
-	HeightMap noise;
+float lerp(float v0, float v1, float t) {
+  return (1 - t) * v0 + t * v1;
+}
+
+// 4 sampled points, x and y within [0..1]
+float bilinearInterp(float v[4], float &x, float &y) {
+	// sampling 4 edges on the x axis
+	auto ex1 = lerp(v[0], v[1], x);
+	auto ex2 = lerp(v[2], v[3], x);
+	// sampling 2 edges on the y axis
+	return lerp(ex1, ex2, y);
+}
+
+// generates 3D noise for use inside the chunk
+void genNoise(Pos3i &curr, Chunk *chk) {
 	uint octaves = 9;
-	static SimplexNoise hmapGen(0.001f, 1.f, 2.f, 0.5f);
-	// noise generation
+	SimplexNoise noiseGen(0.004f, 1.f, 2.f, 0.5f);
+
+	ChkNoise &noise = chk->noise;
+
+	// 2D position of the chunk (chunkspace)
+	Pos3i chkCoord;
+	chkCoord.x = glm::floor(float(curr.x) / CHK_SIZE);
+	chkCoord.z = glm::floor(float(curr.z) / CHK_SIZE);
+	chkCoord.y = 0;
+	
+	// will wait until its generated (unless one of the threads fails)
+	auto &hm = updateHeightmap(chkCoord);
+
+	// v[4]:
+	// 0 -- 1
+	// |    |
+	// 2 -- 3
+	float v[4] = {
+		hm.at(chkCoord.x % (uint)CHK_SIZE + 0, chkCoord.z % (uint)CHK_SIZE + 0),
+		hm.at(chkCoord.x % (uint)CHK_SIZE + 1, chkCoord.z % (uint)CHK_SIZE + 0),
+		hm.at(chkCoord.x % (uint)CHK_SIZE + 0, chkCoord.z % (uint)CHK_SIZE + 1),
+		hm.at(chkCoord.x % (uint)CHK_SIZE + 1, chkCoord.z % (uint)CHK_SIZE + 1),
+	};
+
+	// noise generation loop
+	for (int y = 0; y < NOISE_H; y++) {
 	for (int z = 0; z < NOISE_W; z++) {
-		for (int x = 0; x < NOISE_W; x++) {
-			auto val = hmapGen.fractal(octaves, x + curr.x -1, z + curr.z -1);
-			noise.at(x + z * NOISE_W) = val;
-		}
-	}
-	return noise;
+	for (int x = 0; x < NOISE_W; x++) {
+		// x, z as a position inside the chunk - float [0..1]
+		float relx = (x - 1) / float(hm.width);
+		float relz = (z - 1) / float(hm.width);
+		if (x < 1) relx = 0;
+		if (z < 1) relz = 0;
+		if (x >= NOISE_W - 2) relx = 1;
+		if (z >= NOISE_W - 2) relz = 1;
+		auto cutoff = bilinearInterp(v, relx, relz);
+		auto pos = Pos3i{x + curr.x, y + curr.y, z + curr.z};
+		auto val = noiseGen.fractal(octaves, pos.x -1, pos.y -1, pos.z -1);
+		val -= (pos.y - cutoff) / 64.f;
+		//val -= (pos.y - 24.f) / 64.f;
+		//noiseAtPos(pos, noise) = val;
+		noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
+	}}}
 }
 
 // for debugging purposes
@@ -450,14 +526,12 @@ ChkNoise genNoiseFill(Pos3i &curr) {
 
 // generates chunk data for the Chunk passed as an argument
 void genChunk(Pos3i cPos, Chunk *chk) {
-	// check if theres a heightmap available
 	genNoise(cPos, chk);
 	genMesh(cPos, chk);
 	chk->indices   = chk->mesh.size();
-	chk->generated = true;
 
-	// unlock mutex
-	chk->isUsed.unlock();
+	// awaiting retrival
+	chk->state = JobState::awaiting;
 }
 
 GLuint waterVBO;
@@ -535,28 +609,28 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 		auto hash = chunkHasher(cPos);
 		Chunk &chk = chunkMap[hash];
 
-		if (chk.isUsed.try_lock()) {
-			if (chk.generated) {
-				// submitting the mesh to gpu
-				if (chk.mesh.size() > 0) {
-					glBindBuffer(GL_ARRAY_BUFFER, chk.vbo);
-					glBufferData(GL_ARRAY_BUFFER, chk.indices * sizeof(Vertex),
-         					(void*)chk.mesh.data(), GL_STATIC_DRAW);
-         			chk.mesh.clear();
-				}
-				drawChunk(chk, sp);
-				chk.isUsed.unlock();
-			} else {
-				// vbo for the chunk
-				GLuint vbo;
-				glGenBuffers(1, &vbo);
-				chk.vbo = vbo;
-
-				//LOG_INFO("Generating chunk [%i %i %i]...\nHash: %lu", cPos.x / CHK_SIZE, 
-					//cPos.y / CHK_SIZE, cPos.z / CHK_SIZE, hash);
-				boost::asio::post(pool, std::bind(genChunk, cPos, &chk));
+		if (chk.state == JobState::awaiting) {
+			// submitting the mesh to gpu
+			if (chk.mesh.size() > 0) {
+				glBindBuffer(GL_ARRAY_BUFFER, chk.vbo);
+				glBufferData(GL_ARRAY_BUFFER, chk.indices * sizeof(Vertex),
+         				(void*)chk.mesh.data(), GL_STATIC_DRAW);
+         		chk.mesh.clear();
 			}
-		}
+			chk.state = JobState::generated;
+			drawChunk(chk, sp);
+		} else if (chk.state == JobState::none){
+			chk.state = JobState::delegated;
+			// vbo for the chunk
+			GLuint vbo;
+			glGenBuffers(1, &vbo);
+			chk.vbo = vbo;
+
+			//LOG_INFO("Generating chunk [%i %i %i]...\nHash: %lu", cPos.x / CHK_SIZE, 
+				//cPos.y / CHK_SIZE, cPos.z / CHK_SIZE, hash);
+			boost::asio::post(pool, std::bind(genChunk, cPos, &chk));
+			//genChunk(cPos, &chk);
+		} else drawChunk(chk, sp); 
 	}}}
     drawWater(sp);
 	ImGui::End();
@@ -598,6 +672,7 @@ int main() {
 	ImGuiIO& io = ImGui::GetIO();
 
 	ImGui::StyleColorsClassic();
+
 	ImGui_ImplGlfw_InitForOpenGL(window.get(), true);
 
 	ImGui_ImplOpenGL3_Init(glsl_version);
