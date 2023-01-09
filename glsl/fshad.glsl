@@ -5,7 +5,6 @@ vec3     lightPos = vec3(0, 0, -1);
 in vec3  iNormal;
 in vec3  vertPos;
 in vec4  iColor;
-in vec3  surfNormal;
 in float visibility;
 
 uniform int mode;
@@ -22,11 +21,6 @@ const float screenGamma = 2.2; // Assume the monitor is calibrated to the sRGB c
 void main() {
 	ambientColor = iColor.rgb;
 	vec3 normal = normalize(iNormal);
-
-	vec3 up = vec3(0,1,0);
-	float classify = dot(surfNormal, up);
-	if (classify < 0.2) ambientColor = vec3(0.07,  0.07, 0.07);
-	else if (classify < 0.4) ambientColor = vec3(0.07,  0.04, 0.005);
 
 	vec3 lightDir = lightPos - vertPos;
 	float distance = length(lightDir);

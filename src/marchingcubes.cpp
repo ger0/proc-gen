@@ -1,10 +1,12 @@
-#include "main.hpp"
-#include "marchingcubes.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <array>
 #include <vector>
+
+#include "main.hpp"
+#include "marchingcubes.hpp"
+#include "utils.hpp"
 
 using Pos3i = Position<int>;
 
