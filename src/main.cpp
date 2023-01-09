@@ -69,9 +69,10 @@ struct BiomeChunk {
 	static constexpr int width = CHK_SIZE + 1;
 	using biomeNoise = array<float, width * width>;
 
-	biomeNoise heightmap;
+	biomeNoise height;
+	biomeNoise mountain;
+	biomeNoise sharp;
 	biomeNoise humidity;
-	biomeNoise smoothness;
 
 	float& at(biomeNoise& noise, int x, int z) {
 		return noise.at(x + z * width);
@@ -91,7 +92,19 @@ struct BiomeChunk {
 	}
 };
 
+struct BiomeSamples {
+	array<float, 4> humidity;
+	array<float, 4> mountain;
+	array<float, 4> sharp;
+	array<float, 4> height;
+	
+	float avg(array<float, 4> &smp) {
+		return (smp[0] + smp[1] + smp[2] + smp[3]) / 4.f;
+	}
+};
+
 struct Chunk {
+	BiomeSamples biome;
 	// mesh vertex size
 	size_t indices = 0;
 	// after a thread generates the mesh, main thread will submit it to GPU
@@ -308,6 +321,9 @@ glm::vec3 calculateNormal(glm::vec3 v1, ChkNoise &noise) {
 	return -glm::normalize(norm);
 }
 
+constexpr float MIN_SHARP = 0.35;
+constexpr float MAX_SHARP = 0.50;
+
 void genMesh(Pos3i &curr, Chunk* chk) {
 	// cubes containing vertex information for entire chunk
 	auto &noise = chk->noise;
@@ -348,20 +364,34 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 			vert.pos.y += curr.y;
 			vert.pos.z += curr.z;
 
-			constexpr glm::vec3 colMask(0.26,  0.26, 0.03);
+			constexpr glm::vec4 colMask(0.26,  0.26, 0.03, 0.0);
 			constexpr glm::vec4 colSand(0.27,  0.27, 0.07, 1.0);
 			constexpr glm::vec4 colGrass(0.01, 0.07, 0.0,  1.0);
 			constexpr glm::vec4 colRock(0.07,  0.07, 0.07, 1.0);
+			constexpr glm::vec4 colRock1(0.32,  0.21, 0.13, 1.0);
+
+			float relx, relz;
+			relx = cubePos.x / float(MAP_W);
+			relz = cubePos.z / float(MAP_W);
+			auto hght = bilinearInterp(chk->biome.height,   relx, relz);
+			auto mntn = bilinearInterp(chk->biome.mountain, relx, relz);
+			auto shrp = bilinearInterp(chk->biome.sharp,   relx, relz);
+			auto humd = bilinearInterp(chk->biome.humidity, relx, relz);
+			glm::vec4 humidScale = glm::vec4(humd, humd, humd, 1.f);
 
 			// TODO: remove,  only temporary 
 			if (vert.pos.y < -2.f) {
 				auto scal = std::min(std::max(-(vert.pos.y + 2.f) / 8.f, 0.f), 1.f);
-				vert.color = colSand - glm::vec4(colMask, 0.f) * scal;
+				vert.color = colSand - colMask * scal;
 			}
 			else if (vert.pos.y <= 2.f) vert.color = colSand; 
-			//else if (vert.pos.y <= 32.f) vert.color = colGrass;
-			else if (vert.pos.y <= 28.f) vert.color = colGrass;
-			else vert.color = colRock;
+			else if (vert.pos.y >= 64.f * (1 - mntn * hght)) vert.color = colRock;
+			else {
+				auto scal = (shrp - MIN_SHARP) * (1.f / (MAX_SHARP - MIN_SHARP));
+				//vert.color = colGrass - colMask1 * scal;
+				vert.color = glm::mix(colGrass * humidScale, colRock, scal);
+				//vert.color = glm::vec4(glm::vec3(colGrass * humd), 1.f);
+			}
 
 			//vert.color = glm::vec4(0.01, 0.07, 0.0, 1.f);
 
@@ -390,9 +420,10 @@ void saveNoisePNG(const char* fname, ChkNoise &noise) {
 }
 
 // [TODO:] seed consistency concern
-SimplexNoise hmapGen(0.03f, 1.f, 2.f, 0.5f);
-SimplexNoise humidGen(0.01f, 1.f, 2.f, 0.5f);
-SimplexNoise smoothGen(0.02f, 1.f, 2.f, 0.5f);
+SimplexNoise hmapGen(0.004f, 3.f, 2.f, 0.5f);
+SimplexNoise mountGen(0.01f, 1.f, 2.f, 0.5f);
+SimplexNoise sharpGen(0.01f, 1.f, 2.f, 0.5f);
+SimplexNoise humidGen(0.1f, 1.f, 2.f, 0.5f);
 // checks if a heightmap for the position has been generated, 
 // if not then generate it and make other threads trying to 
 // access that heightmap wait until its finished
@@ -431,20 +462,25 @@ BiomeChunk& updateBiomes(Pos3i &curr) {
 	for (int x = 0; x < bm.width; x++) {
 		auto offset = Pos3i{chkCoord.x + x, 0, chkCoord.z + z}; 
 
-		// humidity
-		auto wval = humidGen.fractal(octaves, offset.x, offset.z);
+		// mountainess 
+		auto wval = mountGen.fractal(octaves, offset.x, offset.z);
 		wval = (1.f + wval) / 2;
-		bm.at(bm.humidity, x, z) = wval;
+		bm.at(bm.mountain, x, z) = wval;
 
-		// smoothness
-		auto sval = smoothGen.fractal(octaves, offset.x, offset.z);
-		sval = glm::clamp((sval + 0.75f + wval) / 2.f, 0.35f, 0.5f);
-		bm.at(bm.smoothness, x, z) = sval;
+		// pointiness 
+		auto sval = sharpGen.fractal(octaves, offset.x, offset.z);
+		sval = glm::clamp((sval + 1.9375f) / 15.f + 0.25f, MIN_SHARP, MAX_SHARP);
+		bm.at(bm.sharp, x, z) = sval;
 
 		// height
-		auto hval = 0.5f + hmapGen.fractal(octaves, offset.x, offset.z) / 3.f;
-		hval += -wval;
-		bm.at(bm.heightmap, x, z) = hval;
+		auto yscale = (sval - MIN_SHARP) * 10;
+		auto hval = 0.5f + hmapGen.fractal(octaves, offset.x, offset.z) / 1.5f;
+		bm.at(bm.height, x, z) = hval;
+		//
+		// pointiness 
+		auto humval = humidGen.fractal(octaves, offset.x, offset.z);
+		humval = (humval + 2.f) / 2.f;
+		bm.at(bm.humidity, x, z) = humval;
 	}}
 	bm.state = JobState::generated;
 	bm.mtx.unlock();
@@ -466,9 +502,16 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 	// will wait until its generated (unless one of the threads fails)
 	auto &bm = updateBiomes(chkPos);
 	//auto &bm = updateBiomemap(chkCoord);
-	array<float, 4> h = bm.sample(bm.heightmap,  chkPos);
-	array<float, 4> s = bm.sample(bm.smoothness, chkPos);
-	array<float, 4> w = bm.sample(bm.humidity,   chkPos);
+	array<float, 4> h = bm.sample(bm.height, 	chkPos);
+	array<float, 4> s = bm.sample(bm.sharp, 	chkPos);
+	array<float, 4> m = bm.sample(bm.mountain, 	chkPos);
+	array<float, 4> w = bm.sample(bm.humidity, 	chkPos);
+
+	chk->biome.height   = h;
+	chk->biome.sharp    = s;
+	chk->biome.mountain = m;
+	chk->biome.humidity = w;
+
 	SimplexNoise noiseGen(1.f, 1.f, 2.f, 0.5f);
 
 	// noise generation loop
@@ -483,22 +526,21 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 		if (z >= bm.width) relz = 1;
 
 		// roundness
-		auto smooth = bilinearInterp(s, relx, relz);
-		// height cutoff
+		auto sharp = bilinearInterp(s, relx, relz);
+		// height scale
 		auto cutoff = bilinearInterp(h, relx, relz);
 		// humidity
-		auto humid = bilinearInterp(w, relx, relz);
+		auto mountn = bilinearInterp(m, relx, relz);
 		for (int y = 0; y < NOISE_H; y++) {
-			//if (y == 0 && x == 0 && z == 0) LOG_INFO("smooth: %f, octaves: %u", smooth, octaves);
-			noiseGen = SimplexNoise(0.008f, 1.f, 2.f, smooth);
+			noiseGen = SimplexNoise(0.0115f, 1.f, 2.f, sharp);
 
 			// actual 3D noise generation
 			auto pos = Pos3i{x + curr.x - 1, y + curr.y - 1, z + curr.z - 1};
 			float val;
-			val = noiseGen.fractal(octaves, pos.x, pos.y, pos.z);
-			val += cutoff - pos.y / (2.f * CHK_SIZE);
+			auto yscale = 0.1f + mountn * 1.5f;
+			val = noiseGen.fractal(octaves, pos.x, pos.y / yscale, pos.z);
+			val += cutoff - pos.y / (yscale * CHK_SIZE);
 			//val -= (pos.y - 24.f) / 64.f;
-			//val = -pos.y + smooth * 100.f;
 
 			noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 		}
@@ -574,7 +616,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
 
 	ImGui::Begin("DEBUG INFO");
-	ImGui::Text("x: %0.1f\n y: %0.1f\n z: %0.1f\n", camera.pos.x, camera.pos.y, camera.pos.z);
+	ImGui::Text("x: %0.1f\ny: %0.1f\nz: %0.1f\n", camera.pos.x, camera.pos.y, camera.pos.z);
 	ImGui::Text("[%i %i %i]\n\n", currChkPos.x, currChkPos.y, currChkPos.z);
 
 	// rendering or queueing creation of chunks
@@ -611,7 +653,16 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 				//cPos.y / CHK_SIZE, cPos.z / CHK_SIZE, hash);
 			boost::asio::post(pool, std::bind(genChunk, cPos, &chk));
 			//genChunk(cPos, &chk);
-		} else drawChunk(chk, sp); 
+		} else {
+			if (y == 0 && z == 0 && x == 0) {
+				ImGui::Text("Biome:\n");
+				ImGui::Text("Sharpness: %.2f\n", chk.biome.avg(chk.biome.sharp));
+				ImGui::Text("Mountain:  %.2f\n", chk.biome.avg(chk.biome.mountain));
+				ImGui::Text("Humidity:  %.2f\n", chk.biome.avg(chk.biome.humidity));
+				ImGui::Text("Height:    %.2f\n", chk.biome.avg(chk.biome.height));
+			}
+			drawChunk(chk, sp); 
+		}
 	}}}
     drawWater(sp);
 	ImGui::End();
