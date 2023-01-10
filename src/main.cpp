@@ -20,6 +20,7 @@
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/post.hpp>
 
+#include "Sphere.hpp"
 #include "utils.hpp"
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_glfw.h"
@@ -30,6 +31,8 @@
 #include "shaderprogram.hpp"
 #include "marchingcubes.hpp"
 #include "log.hpp"
+
+#include "model.hpp"
 
 #include "main.hpp"
 
@@ -368,6 +371,7 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 			constexpr glm::vec4 colSand(0.27,  0.27, 0.07, 1.0);
 			constexpr glm::vec4 colGrass(0.01, 0.07, 0.0,  1.0);
 			constexpr glm::vec4 colRock(0.07,  0.07, 0.07, 1.0);
+			constexpr glm::vec4 colDirt(0.07,  0.04, 0.005, 1.0);
 			constexpr glm::vec4 colRock1(0.32,  0.21, 0.13, 1.0);
 
 			float relx, relz;
@@ -380,12 +384,21 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 			glm::vec4 humidScale = glm::vec4(humd, humd, humd, 1.f);
 
 			// TODO: remove,  only temporary 
-			if (vert.pos.y < -2.f) {
+			auto dotProd = glm::dot(vert.norm, camera.up);
+			// rock 
+			if (dotProd < 0.2 || vert.pos.y >= 64.f * (1 - mntn * hght)) {
+				vert.color = colRock;
+			} // dirt
+			else if (dotProd < 0.4) {
+				vert.color = colDirt;
+			} // dark sand
+			else if (vert.pos.y < -2.f) { 	
 				auto scal = std::min(std::max(-(vert.pos.y + 2.f) / 8.f, 0.f), 1.f);
 				vert.color = colSand - colMask * scal;
-			}
-			else if (vert.pos.y <= 2.f) vert.color = colSand; 
-			else if (vert.pos.y >= 64.f * (1 - mntn * hght)) vert.color = colRock;
+			} // sand
+			else if (vert.pos.y <= 2.f) {
+				vert.color = colSand; 
+			} // grass
 			else {
 				auto scal = (shrp - MIN_SHARP) * (1.f / (MAX_SHARP - MIN_SHARP));
 				//vert.color = colGrass - colMask1 * scal;
@@ -532,7 +545,7 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 		// humidity
 		auto mountn = bilinearInterp(m, relx, relz);
 		for (int y = 0; y < NOISE_H; y++) {
-			noiseGen = SimplexNoise(0.0115f, 1.f, 2.f, sharp);
+			noiseGen = SimplexNoise(0.012f, 1.f, 2.f, sharp);
 
 			// actual 3D noise generation
 			auto pos = Pos3i{x + curr.x - 1, y + curr.y - 1, z + curr.z - 1};
@@ -580,7 +593,7 @@ void drawWater(ShaderProgram* sp) {
         	sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
 	glEnableVertexAttribArray(sp->a("color"));
 
-	glDisable(GL_CULL_FACE);
+	//glDisable(GL_CULL_FACE);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 
 	glBindVertexArray(0);
@@ -603,10 +616,64 @@ void genWater() {
          	(void*)verts.data(), GL_STATIC_DRAW);
 }
 
+uint cylVBO;
+uint cylSize;
+
+void genTree() {
+	Model tree = Model();
+	auto V = glm::mat4(1.f);
+	auto M = glm::mat4(1.f);
+	M = glm::translate(M, glm::vec3(1.f, 16.f, 1.f));
+	auto pos = glm::vec3(0.f, 0.f, 0.f);
+	auto scale = glm::vec3(1.f, 1.f, 1.f);
+	Mesh mesh = tree.genTree(pos, V, scale, M);
+
+	/* for (auto &v : mesh) {
+		printf("pos: %f %f %f norm: %f %f %f col: %f %f %f\n", 
+				v.pos.x, v.pos.y, v.pos.z, 
+				v.norm.x, v.norm.y, v.norm.z,
+				v.color.r, v.color.g, v.color.b);
+	} */
+
+
+	glGenBuffers(1, &cylVBO);
+	glBindBuffer(GL_ARRAY_BUFFER, cylVBO);
+	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
+         	(void*)mesh.data(), GL_STATIC_DRAW);
+    cylSize = mesh.size();
+}
+
+void drawCylinder(ShaderProgram *sp) {
+	glm::mat4 M = glm::mat4(1.f);
+	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
+
+	glBindVertexArray(vao);
+	glBindBuffer(GL_ARRAY_BUFFER, cylVBO);
+
+	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
+
+	uint count = 3;
+	// passing position vector to vao
+	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, pos));
+	glEnableVertexAttribArray(sp->a("vertex"));
+
+	// passing normal vector to vao
+	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, norm));
+	glEnableVertexAttribArray(sp->a("normal"));
+
+	glVertexAttribPointer(sp->a("color"), count + 1, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
+	glEnableVertexAttribArray(sp->a("color"));
+
+	glDrawArrays(GL_TRIANGLES, 0, cylSize);
+}
+
 void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	sp->use();
 
-	glEnable(GL_CULL_FACE);
+	//glEnable(GL_CULL_FACE);
 	glm::mat4 M = glm::mat4(1.f);
 	glm::mat4 V = glm::lookAt(camera.pos, camera.pos + camera.target, camera.up);
 	glm::mat4 P = glm::perspective(glm::radians(FOV), ASPECT_RATIO, Z_NEAR, Z_FAR);
@@ -648,9 +715,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 			GLuint vbo;
 			glGenBuffers(1, &vbo);
 			chk.vbo = vbo;
-
-			//LOG_INFO("Generating chunk [%i %i %i]...\nHash: %lu", cPos.x / CHK_SIZE, 
-				//cPos.y / CHK_SIZE, cPos.z / CHK_SIZE, hash);
+			// delegate chunk generation to a thread
 			boost::asio::post(pool, std::bind(genChunk, cPos, &chk));
 			//genChunk(cPos, &chk);
 		} else {
@@ -664,6 +729,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 			drawChunk(chk, sp); 
 		}
 	}}}
+	drawCylinder(sp);
     drawWater(sp);
 	ImGui::End();
 }
@@ -727,6 +793,7 @@ int main() {
 			shaderDestroyer);
 
 	genWater();
+	genTree();
 
 	// main loop
 	while (!glfwWindowShouldClose(window.get())) {

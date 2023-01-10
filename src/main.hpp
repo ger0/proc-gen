@@ -54,3 +54,5 @@ struct Vertex {
 	glm::vec3 norm;
 	glm::vec4 color;
 };
+
+using Mesh = std::vector<Vertex>;
