@@ -21,16 +21,10 @@ constexpr uint WINDOW_H = 600;
 constexpr float ASPECT_RATIO = float(WINDOW_W) / WINDOW_H;
 constexpr float FOV = 90.f;
 
-constexpr int RENDER_DIST = 5;
-
 // size of one chunk
 constexpr int CHK_SIZE = 32;
 constexpr int MAP_W = CHK_SIZE;
 constexpr int MAP_H = CHK_SIZE;
-
-// render distance
-constexpr float Z_NEAR = 0.1f;
-constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
 
 // size of the noise array 
 constexpr uint NOISE_W = MAP_W + 3;

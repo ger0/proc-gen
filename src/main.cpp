@@ -36,6 +36,14 @@
 #include "model.hpp"
 #include "poisson_disk_sampling.h"
 
+
+// render distance
+constexpr int RENDER_DIST = 5;
+constexpr float Z_NEAR = 0.1f;
+constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
+
+constexpr float LVL_SAND = 2.f;
+
 // colours
 constexpr glm::vec4 waterColor(0.25, 0.516, 0.914, 0.46);
 constexpr glm::vec3 skyColor(0.45, 0.716, 0.914);
@@ -83,6 +91,7 @@ struct BiomeChunk {
 	biomeNoise mountain;
 	biomeNoise sharp;
 	biomeNoise humidity;
+	biomeNoise forest;
 
 	float& at(biomeNoise& noise, int x, int z) {
 		return noise.at(x + z * width);
@@ -116,8 +125,9 @@ struct BiomeSamples {
 	array<float, 4> mountain;
 	array<float, 4> sharp;
 	array<float, 4> height;
+	array<float, 4> forest;
 	
-	float avg(array<float, 4> &smp) {
+	static float avg(array<float, 4> &smp) {
 		return (smp[0] + smp[1] + smp[2] + smp[3]) / 4.f;
 	}
 };
@@ -129,6 +139,8 @@ struct Tree {
 };
 
 struct Chunk {
+	// chunkspace pos
+	Pos3i pos;
 	BiomeSamples biome;
 	TreeSamples  *treeMap;
 
@@ -137,9 +149,8 @@ struct Chunk {
 
 	// after a thread generates the mesh, the main thread will submit it to GPU
 	GLuint vbo;
-	vector<Tree> trees;
-
 	Mesh mesh;
+	vector<Tree> trees;
 
 	// 3D noise used for terrain generation
 	ChkNoise *noise;
@@ -151,6 +162,21 @@ struct Chunk {
 		mesh.shrink_to_fit();
 		delete noise;
 	}
+	ChkHash getHash() {
+		return hasher(pos);
+	}
+	// input: worldspace coordinates, output: chunk hash
+	// position must be 16bit integer otherwise crashiento
+	// returns 64bit uint containing position of the chunk
+	static ChkHash hasher(Pos3i &pos) {
+		ChkHash x = glm::floor(pos.x / CHK_SIZE);
+		ChkHash y = glm::floor(pos.y / CHK_SIZE);
+		ChkHash z = glm::floor(pos.z / CHK_SIZE);
+		x = x << 0;
+		z = z << 16;
+		y = y << 32;
+		return x + y + z;
+	};
 };
 
 // storage for all chunks
@@ -307,19 +333,6 @@ int pFail(const char *message) {
 	return -1;
 }
 
-// input: worldspace coordinates, output: chunk hash
-// position must be 16bit integer otherwise crashiento
-// returns 64bit uint containing position of the chunk
-ChkHash chunkHasher(Pos3i &pos) {
-	ChkHash x = glm::floor(pos.x / CHK_SIZE);
-	ChkHash y = glm::floor(pos.y / CHK_SIZE);
-	ChkHash z = glm::floor(pos.z / CHK_SIZE);
-	x = x << 0;
-	z = z << 16;
-	y = y << 32;
-	return x + y + z;
-};
-
 // converts Position<uint> into a reference to an element in the noise array
 inline float& noiseAtPos(Pos3i pos, ChkNoise &noise) {
 	auto x = pos.x + 1;
@@ -428,11 +441,11 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 			else if (dotProd < 0.4) {
 				vert.color = colDirt;
 			} // dark sand
-			else if (vert.pos.y < -2.f) { 	
+			else if (vert.pos.y < -LVL_SAND) { 	
 				auto scal = std::min(std::max(-(vert.pos.y + 2.f) / 8.f, 0.f), 1.f);
 				vert.color = colSand - colMask * scal;
 			} // sand
-			else if (vert.pos.y <= 2.f) {
+			else if (vert.pos.y <= LVL_SAND) {
 				vert.color = colSand; 
 			} // grass
 			else {
@@ -471,10 +484,11 @@ void saveNoisePNG(const char* fname, ChkNoise &noise) {
 }
 
 // [TODO:] seed consistency concern
-SimplexNoise hmapGen(0.004f, 3.f, 2.f, 0.5f);
+SimplexNoise hmapGen(0.02f, 3.f, 2.f, 0.5f);
 SimplexNoise mountGen(0.01f, 1.f, 2.f, 0.5f);
 SimplexNoise sharpGen(0.01f, 1.f, 2.f, 0.5f);
 SimplexNoise humidGen(0.1f, 1.f, 2.f, 0.5f);
+SimplexNoise forestGen(0.01f, 1.f, 2.f, 0.5f);
 // checks if a heightmap for the position has been generated, 
 // if not then generate it and make other threads trying to 
 // access that heightmap wait until its finished
@@ -486,7 +500,7 @@ BiomeChunk &updateBiomes(Pos3i &curr) {
 	chkCoord.y = 0;
 
 	// hashing function alias
-	auto key = chunkHasher;
+	auto key = Chunk::hasher;
 
 	if (biomeMap.count(key(chkCoord)) != 0) {
 		return biomeMap[key(chkCoord)];
@@ -530,20 +544,27 @@ BiomeChunk &updateBiomes(Pos3i &curr) {
 		auto humval = humidGen.fractal(octaves, offset.x, offset.z);
 		humval = (humval + 2.f) / 4.f;
 		bm.at(bm.humidity, x, z) = humval;
+
+		auto forestval = (forestGen.fractal(octaves, offset.x, offset.z) + 2.f) * 2.5;
+		bm.at(bm.forest, x, z) = forestval;
 	}}
 
 	// tree placement for each chunk
 	for (int z = 0; z < CHK_SIZE; z++) {
 	for (int x = 0; x < CHK_SIZE; x++) {
-		float r = 12.f;
 		Pos3i cPos = chkCoord * CHK_SIZE;
 		cPos.x += x * CHK_SIZE;
 		cPos.z += z * CHK_SIZE;
-		auto kxmin = array<float, 2>{(float)cPos.x, (float)cPos.z};
-		auto kxmax = array<float, 2>{(float)cPos.x+CHK_SIZE, (float)cPos.z+CHK_SIZE};
+
+		array<float, 4> f = bm.sample(bm.forest, cPos);
+		auto avg = BiomeSamples::avg(f);
+		float r = 32.f / avg;
+		auto kxmin = array<float, 2>{0, 0};
+		auto kxmax = array<float, 2>{CHK_SIZE, CHK_SIZE};
 		auto ran = thinks::poisson_disk_sampling_internal::Hash(rand() % RAND_MAX);
-		auto map = thinks::PoissonDiskSampling(r, kxmin, kxmax, 30, ran);
-		auto hash = chunkHasher(cPos);
+		auto map = thinks::PoissonDiskSampling(r, kxmin, kxmax, avg, ran);
+
+		auto hash = Chunk::hasher(cPos);
 		bm.treeMap[hash].vec = map;
 	}
 	}
@@ -554,7 +575,7 @@ BiomeChunk &updateBiomes(Pos3i &curr) {
 
 void assignTreeMap(Pos3i &chkPos, BiomeChunk &bm, Chunk &chk) {
 	Pos3i cPos = chkPos * CHK_SIZE;
-	chk.treeMap = &bm.treeMap[chunkHasher(cPos)];
+	chk.treeMap = &bm.treeMap[Chunk::hasher(cPos)];
 }
 
 // generates 3D noise for use inside the chunk
@@ -576,11 +597,13 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 	array<float, 4> s = bm.sample(bm.sharp, 	chkPos);
 	array<float, 4> m = bm.sample(bm.mountain, 	chkPos);
 	array<float, 4> w = bm.sample(bm.humidity, 	chkPos);
+	array<float, 4> f = bm.sample(bm.forest, 	chkPos);
 
 	chk->biome.height   = h;
 	chk->biome.sharp    = s;
 	chk->biome.mountain = m;
 	chk->biome.humidity = w;
+	chk->biome.forest 	= f;
 
 	SimplexNoise noiseGen(1.f, 1.f, 2.f, 0.5f);
 
@@ -626,18 +649,30 @@ GLuint bindMesh(Mesh &mesh) {
     return vbo;
 }
 
-void genTreeMap(Pos3i &cPos, Chunk *chk) {
-	if (cPos.y != 0) return;
-	auto &map = *chk->treeMap;
-
-	float r = 12.f;
-	auto kxmin = array<float, 2>{(float)cPos.x, (float)cPos.z};
-	auto kxmax = array<float, 2>{(float)cPos.x+CHK_SIZE, (float)cPos.z+CHK_SIZE};
-	auto hash = thinks::poisson_disk_sampling_internal::Hash(rand() % RAND_MAX);
-	map.vec = thinks::PoissonDiskSampling(r, kxmin, kxmax, 2, hash);
+// absolute garbage, but it works so whatever...
+bool testTreePlane(Pos3i &s, ChkNoise &density) {
+	if (noiseAtPos(Pos3i{s.x,   s.y+3,   s.z  }, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x+1, s.y+3,   s.z  }, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x+1, s.y+3,   s.z+1}, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x,   s.y+3,   s.z+1}, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x,   s.y+2, s.z  }, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x+1, s.y+2, s.z  }, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x+1, s.y+2, s.z+1}, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x,   s.y+2, s.z+1}, density) < 0.f &&
+		noiseAtPos(Pos3i{s.x,   s.y+1, s.z  }, density) > 0.0f &&
+		noiseAtPos(Pos3i{s.x+1, s.y+1, s.z  }, density) > 0.0f &&
+		noiseAtPos(Pos3i{s.x+1, s.y+1, s.z+1}, density) > 0.0f &&
+		noiseAtPos(Pos3i{s.x,   s.y+1, s.z+1}, density) > 0.0f &&
+		noiseAtPos(Pos3i{s.x,   s.y  , s.z  }, density) > 0.0f &&
+		noiseAtPos(Pos3i{s.x+1, s.y  , s.z  }, density) > 0.0f &&
+		noiseAtPos(Pos3i{s.x+1, s.y  , s.z+1}, density) > 0.0f &&
+		noiseAtPos(Pos3i{s.x,   s.y  , s.z+1}, density) > 0.0f) {
+		return true;
+	}
+	return false;
 }
 
-void placeTrees(Chunk *chk) {
+void placeTrees(Pos3i &cPos, Chunk *chk) {
 	auto &rd = rand;
 	auto &map = *chk->treeMap;
 
@@ -646,20 +681,36 @@ void placeTrees(Chunk *chk) {
 	// select trees
 	auto iter = vec.begin();
 	while(iter != vec.end()) {
-		if (true) {
-			auto &t = *iter;
-			// selecting one of the pregenerated models
-			auto &model = treemodels.at(rd() % treemodels.size());
-			float rotation = 2 * glm::pi<float>() * (rd() / float(RAND_MAX));
-			Tree tree = {
-				.position 	= glm::vec3(t[0], 16.f, t[1]),
-				.rotation 	= rotation,
-				.model  	= model
-			};
-			chk->trees.push_back(tree);
+		auto &t = *iter;
+		bool candidate = false;
+		int y = CHK_SIZE - 1;
+		Pos3i s = {
+			int(glm::floor(t[0])),
+			y, 
+			int(glm::floor(t[1]))
+		};
+		while (y >= 0 && candidate == false) {
+			y--;
+			s.y = y;
+			candidate = testTreePlane(s, *chk->noise);
+		}
+		if (candidate) {
+			if (y + cPos.y > LVL_SAND) {
+				// selecting one of the pregenerated models
+				auto &model = treemodels.at(rd() % treemodels.size());
+				float rotation = 2 * glm::pi<float>() * (rd() / float(RAND_MAX));
+				auto position  = glm::vec3(cPos.x + t[0], y + cPos.y, cPos.z + t[1]);
+				Tree tree = {
+					.position 	= position,
+					.rotation 	= rotation,
+					.model  	= model
+				};
+				chk->trees.push_back(tree);
+			}
 			// erasing the position from the sample vector
 			iter = vec.erase(iter);
-		} else iter++;
+		}
+		else iter++;
 	}
 	map.mtx.unlock();
 }
@@ -668,7 +719,7 @@ void placeTrees(Chunk *chk) {
 void genChunk(Pos3i cPos, Chunk *chk) {
 	genNoise(cPos, chk);
 	genMesh(cPos, chk);
-	if (cPos.y == 0) placeTrees(chk);
+	if (cPos.y == 0) placeTrees(cPos, chk);
 
 	// awaiting retrival
 	chk->state = JobState::awaiting;
@@ -684,7 +735,7 @@ void pregenChunks(int dist = 8) {
 			.y = y * CHK_SIZE,
 			.z = z * CHK_SIZE
 		};
-		auto hash = chunkHasher(cPos);
+		auto hash = Chunk::hasher(cPos);
 		Chunk &chk = chunkMap[hash];
 		chk.state = JobState::delegated;
 		chk.noise = new ChkNoise;
@@ -709,7 +760,11 @@ void pregenTrees() {
 
 void drawWater(ShaderProgram* sp) {
 	glm::mat4 M = glm::mat4(1.f);
-	M = glm::translate(M, {camera.pos.x - (CHK_SIZE * RENDER_DIST), 0, camera.pos.z - (CHK_SIZE * RENDER_DIST)});
+	M = glm::translate(M, {
+			camera.pos.x - (CHK_SIZE * RENDER_DIST), 
+			0, 
+			camera.pos.z - (CHK_SIZE * RENDER_DIST)
+			});
 	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
 
 	glBindVertexArray(vao);
@@ -775,7 +830,8 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
 
 	ImGui::Begin("DEBUG INFO");
-	ImGui::Text("x: %0.1f\ny: %0.1f\nz: %0.1f\n", camera.pos.x, camera.pos.y, camera.pos.z);
+	ImGui::Text("x: %0.1f\ny: %0.1f\nz: %0.1f\n", 
+			camera.pos.x, camera.pos.y, camera.pos.z);
 	ImGui::Text("[%i %i %i]\n\n", currChkPos.x, currChkPos.y, currChkPos.z);
 
 	// rendering or queueing creation of chunks
@@ -787,7 +843,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 			.y = (currChkPos.y + y) * CHK_SIZE,
 			.z = (currChkPos.z + z) * CHK_SIZE
 		};
-		auto hash = chunkHasher(cPos);
+		auto hash = Chunk::hasher(cPos);
 		Chunk &chk = chunkMap[hash];
 		BiomeChunk bm;
 
@@ -812,6 +868,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 				ImGui::Text("Sharpness: %.2f\n", chk.biome.avg(chk.biome.sharp));
 				ImGui::Text("Mountain:  %.2f\n", chk.biome.avg(chk.biome.mountain));
 				ImGui::Text("Humidity:  %.2f\n", chk.biome.avg(chk.biome.humidity));
+				ImGui::Text("Forest:    %.2f\n", chk.biome.avg(chk.biome.forest));
 				ImGui::Text("Height:    %.2f\n", chk.biome.avg(chk.biome.height));
 			}
 			// drawing a chunk
@@ -888,7 +945,7 @@ int main() {
 		genWater();
     	pregenTrees();
     	LOG_INFO("Done generating trees!");
-    	pregenChunks(2);
+    	//pregenChunks(4);
     	// waiting for chunk generation to complete
     	LOG_INFO("Done generating chunks!");
     }
