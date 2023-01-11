@@ -38,7 +38,7 @@
 
 
 // render distance
-constexpr int RENDER_DIST = 5;
+constexpr int RENDER_DIST = 6;
 constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
 
@@ -184,7 +184,7 @@ std::unordered_map<ChkHash, Chunk> chunkMap;
 // storage for biomes, 1 cell = 1 chunk
 std::unordered_map<ChkHash, BiomeChunk> biomeMap;
 // pre-generated trees
-array<TreeModel, 512> treemodels;
+array<TreeModel, 1024> treemodels;
 
 struct Camera {
 	glm::vec3 pos = glm::vec3(0.f, 3.f, 3.f);
@@ -836,7 +836,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 
 	// rendering or queueing creation of chunks
 	for (int x = -RENDER_DIST;   x <= RENDER_DIST;   x++) {
-	for (int y = -RENDER_DIST/3; y <= RENDER_DIST/3; y++) {
+	for (int y = -2; y <= 2; y++) {
 	for (int z = -RENDER_DIST;   z <= RENDER_DIST;   z++) {
 		Pos3i cPos = {
 			.x = (currChkPos.x + x) * CHK_SIZE,
@@ -945,9 +945,9 @@ int main() {
 		genWater();
     	pregenTrees();
     	LOG_INFO("Done generating trees!");
-    	//pregenChunks(4);
-    	// waiting for chunk generation to complete
+    	pregenChunks();
     	LOG_INFO("Done generating chunks!");
+    	// waiting for chunk generation to complete
     }
 	// main loop
 	while (!glfwWindowShouldClose(window.get())) {
