@@ -29,7 +29,6 @@ Model::Model(float _angle_x, float _angle_y){
   	float R  = 0.4 + (rand() / float(RAND_MAX)) / 2.f;
   	dr = R / 6;
     currR = R;
-    printf("%f %f\n", dr, currR);
     branche = genBranch(currR, currR - dr, 1.f);
     float sph_size = 1.8 + 1.4 * rand() / RAND_MAX;
   	green_sphere = Sphere(5, 5, sph_size, sph_size, glm::vec3(0.0, 0.07, 0.01), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h

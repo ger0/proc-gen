@@ -1,7 +1,7 @@
 #version 330
 precision mediump float;
 
-vec3     lightPos = vec3(0, 0, -1);
+vec3     lightPos = vec3(0, 2048, -0.15);
 in vec3  iNormal;
 in vec3  vertPos;
 in vec4  iColor;
@@ -13,8 +13,8 @@ uniform vec3 skyColor;
 const vec3 lightColor = vec3(0.5, 0.5, 0.4);
 const float lightPower = 0.25;
 vec3 ambientColor = vec3(0.01, 0.03, 0.08);
-const vec3 diffuseColor = vec3(0.33, 0.33, 0.0);
-const vec3 specColor = vec3(0.6, 0.6, 0.6);
+const vec3 diffuseColor = vec3(0.11, 0.11, 0.09);
+const vec3 specColor = vec3(0.05, 0.05, 0.035);
 const float shininess = 2.0;
 const float screenGamma = 2.2; // Assume the monitor is calibrated to the sRGB color space
 
@@ -37,18 +37,11 @@ void main() {
 		vec3 halfDir = normalize(lightDir + viewDir);
 		float specAngle = max(dot(halfDir, normal), 0.0);
 		specular = pow(specAngle, shininess);
-
-		// this is phong (for comparison)
-		if (mode == 2) {
-    		vec3 reflectDir = reflect(-lightDir, normal);
-    		specAngle = max(dot(reflectDir, viewDir), 0.0);
-    		// note that the exponent is different here
-    		specular = pow(specAngle, shininess/4.0);
-		}
 	}
-	vec3 colorLinear = ambientColor +
-		diffuseColor * lambertian * lightColor * lightPower +
-		specColor * specular * lightColor * lightPower;
+	vec3 colorLinear = ambientColor * vec3(0.55, 0.55, 0.55) +
+		lambertian * ambientColor * diffuseColor+
+		specColor * specular;
+
 	// apply gamma correction (assume ambientColor, diffuseColor and specColor
 	// have been linearized, i.e. have no gamma correction in them)
 	vec3 colorGammaCorrected = pow(colorLinear, vec3(1.0 / screenGamma));

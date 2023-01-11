@@ -16,12 +16,13 @@ const float gradient = 10.0;
 
 void main() {
 	gl_Position = P * V * M * vec4(vertex, 1.0);
-	vec4 vertPos4 = V * M * vec4(vertex, 1.0);
+	vec4 vertPos4 = M * vec4(vertex, 1.0);
+	vec4 viewVertPos4 = V * M * vec4(vertex, 1.0);
 	vertPos = vec3(vertPos4) / vertPos4.w;
-	iNormal = vec3(V * M * vec4(normal, 0.0));
+	iNormal = vec3(M * vec4(normal, 0.0));
 
 	iColor = color;
-	float distance = length(vertPos4.xyz);
+	float distance = length(viewVertPos4.xyz);
 	visibility = exp(-pow((distance * density), gradient));
 	visibility = clamp(visibility, 0.0, 1.0);
 }

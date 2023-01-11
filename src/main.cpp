@@ -65,6 +65,9 @@ enum JobState {
 std::mutex mtx;
 
 // ------------------------- chunks ----------------------
+struct TreeChunk {
+
+};
 struct BiomeChunk {
 	// noises used by 3D noise generator
 	JobState state = none;
@@ -399,9 +402,11 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 			vert.pos.z += curr.z;
 
 			constexpr glm::vec4 colMask(0.26,  0.26, 0.03, 0.0);
-			constexpr glm::vec4 colSand(0.27,  0.27, 0.07, 1.0);
-			constexpr glm::vec4 colGrass(0.01, 0.07, 0.0,  1.0);
-			constexpr glm::vec4 colRock(0.07,  0.07, 0.07, 1.0);
+			constexpr glm::vec4 colSand(0.29,  0.29, 0.08, 1.0);
+			constexpr glm::vec4 colGrass(0.0, 0.093, 0.03,  1.0);
+			constexpr glm::vec4 colGrassWet(0.056, 0.15, 0.0, 1.0);
+			constexpr glm::vec4 colGrassShr(0.066, 0.05, 0.04, 1.0);
+			constexpr glm::vec4 colRock(0.1,  0.1, 0.1, 1.0);
 			constexpr glm::vec4 colDirt(0.07,  0.04, 0.005, 1.0);
 			constexpr glm::vec4 colRock1(0.32,  0.21, 0.13, 1.0);
 
@@ -431,9 +436,10 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 				vert.color = colSand; 
 			} // grass
 			else {
-				auto scal = (shrp - MIN_SHARP) * (1.f / (MAX_SHARP - MIN_SHARP));
+				auto sharpScal = (shrp - MIN_SHARP) * (1.f / (MAX_SHARP - MIN_SHARP));
 				//vert.color = colGrass - colMask1 * scal;
-				vert.color = glm::mix(colGrass * humidScale, colRock, scal);
+				vert.color = glm::mix(colGrass, colGrassWet, humidScale);
+				vert.color = glm::mix(vert.color, colGrassShr, sharpScal);
 				//vert.color = glm::vec4(glm::vec3(colGrass * humd), 1.f);
 			}
 
@@ -522,7 +528,7 @@ BiomeChunk &updateBiomes(Pos3i &curr) {
 		//
 		// pointiness 
 		auto humval = humidGen.fractal(octaves, offset.x, offset.z);
-		humval = (humval + 2.f) / 2.f;
+		humval = (humval + 2.f) / 4.f;
 		bm.at(bm.humidity, x, z) = humval;
 	}}
 	bm.state = JobState::generated;
