@@ -65,10 +65,14 @@ enum JobState {
 std::mutex mtx;
 
 // ------------------------- chunks ----------------------
-struct TreeChunk {
-
+struct TreeSamples {
+	using Samples = vector<array<float, 2>>;
+	Samples vec;
+	std::mutex mtx;
 };
+
 struct BiomeChunk {
+	std::unordered_map<ChkHash, TreeSamples> treeMap;
 	// noises used by 3D noise generator
 	JobState state = none;
 	std::mutex mtx;
@@ -118,8 +122,6 @@ struct BiomeSamples {
 	}
 };
 
-using TreeSamples = vector<array<float, 2>>;
-
 struct Tree {
 	glm::vec3 position;
 	float rotation;
@@ -128,7 +130,7 @@ struct Tree {
 
 struct Chunk {
 	BiomeSamples biome;
-	TreeSamples  treeMap;
+	TreeSamples  *treeMap;
 
 	// how many faces in the mesh to render
 	size_t indices = 0;
@@ -146,9 +148,7 @@ struct Chunk {
 	std::atomic<JobState> state = ATOMIC_VAR_INIT(JobState::none);
 	void clear() {
 		mesh.clear();
-		treeMap.clear();
 		mesh.shrink_to_fit();
-		treeMap.shrink_to_fit();
 		delete noise;
 	}
 };
@@ -493,7 +493,7 @@ BiomeChunk &updateBiomes(Pos3i &curr) {
 	}
 	// else
 	mtx.lock();
-	BiomeChunk 	&bm = biomeMap[key(chkCoord)];
+	BiomeChunk &bm = biomeMap[key(chkCoord)];
 	mtx.unlock();
 
 	bm.mtx.lock();
@@ -531,9 +531,30 @@ BiomeChunk &updateBiomes(Pos3i &curr) {
 		humval = (humval + 2.f) / 4.f;
 		bm.at(bm.humidity, x, z) = humval;
 	}}
+
+	// tree placement for each chunk
+	for (int z = 0; z < CHK_SIZE; z++) {
+	for (int x = 0; x < CHK_SIZE; x++) {
+		float r = 12.f;
+		Pos3i cPos = chkCoord * CHK_SIZE;
+		cPos.x += x * CHK_SIZE;
+		cPos.z += z * CHK_SIZE;
+		auto kxmin = array<float, 2>{(float)cPos.x, (float)cPos.z};
+		auto kxmax = array<float, 2>{(float)cPos.x+CHK_SIZE, (float)cPos.z+CHK_SIZE};
+		auto ran = thinks::poisson_disk_sampling_internal::Hash(rand() % RAND_MAX);
+		auto map = thinks::PoissonDiskSampling(r, kxmin, kxmax, 30, ran);
+		auto hash = chunkHasher(cPos);
+		bm.treeMap[hash].vec = map;
+	}
+	}
 	bm.state = JobState::generated;
 	bm.mtx.unlock();
 	return bm;
+}
+
+void assignTreeMap(Pos3i &chkPos, BiomeChunk &bm, Chunk &chk) {
+	Pos3i cPos = chkPos * CHK_SIZE;
+	chk.treeMap = &bm.treeMap[chunkHasher(cPos)];
 }
 
 // generates 3D noise for use inside the chunk
@@ -550,7 +571,7 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 	
 	// will wait until its generated (unless one of the threads fails)
 	auto &bm = updateBiomes(chkPos);
-	//auto &bm = updateBiomemap(chkCoord);
+	assignTreeMap(chkPos, bm, *chk);
 	array<float, 4> h = bm.sample(bm.height, 	chkPos);
 	array<float, 4> s = bm.sample(bm.sharp, 	chkPos);
 	array<float, 4> m = bm.sample(bm.mountain, 	chkPos);
@@ -607,36 +628,47 @@ GLuint bindMesh(Mesh &mesh) {
 
 void genTreeMap(Pos3i &cPos, Chunk *chk) {
 	if (cPos.y != 0) return;
+	auto &map = *chk->treeMap;
 
 	float r = 12.f;
 	auto kxmin = array<float, 2>{(float)cPos.x, (float)cPos.z};
 	auto kxmax = array<float, 2>{(float)cPos.x+CHK_SIZE, (float)cPos.z+CHK_SIZE};
-	//printf("x: %f - %f, y: %f - %f\n", kxmin[0], kxmin[1], kxmax[0], kxmax[1]);
 	auto hash = thinks::poisson_disk_sampling_internal::Hash(rand() % RAND_MAX);
-	chk->treeMap = thinks::PoissonDiskSampling(r, kxmin, kxmax, 2, hash);
+	map.vec = thinks::PoissonDiskSampling(r, kxmin, kxmax, 2, hash);
 }
 
 void placeTrees(Chunk *chk) {
 	auto &rd = rand;
-	for (auto &t : chk->treeMap) {
-		// selecting one of the pregenerated models
-		auto &model = treemodels.at(rd() % treemodels.size());
-		float rotation = 2 * glm::pi<float>() * (rd() / float(RAND_MAX));
-		Tree tree = {
-			.position 	= glm::vec3(t[0], 16.f, t[1]),
-			.rotation 	= rotation,
-			.model  	= model
-		};
-		chk->trees.push_back(tree);
+	auto &map = *chk->treeMap;
+
+	map.mtx.lock();
+	auto &vec = map.vec;
+	// select trees
+	auto iter = vec.begin();
+	while(iter != vec.end()) {
+		if (true) {
+			auto &t = *iter;
+			// selecting one of the pregenerated models
+			auto &model = treemodels.at(rd() % treemodels.size());
+			float rotation = 2 * glm::pi<float>() * (rd() / float(RAND_MAX));
+			Tree tree = {
+				.position 	= glm::vec3(t[0], 16.f, t[1]),
+				.rotation 	= rotation,
+				.model  	= model
+			};
+			chk->trees.push_back(tree);
+			// erasing the position from the sample vector
+			iter = vec.erase(iter);
+		} else iter++;
 	}
+	map.mtx.unlock();
 }
 
 // generates chunk data for the Chunk passed as an argument
 void genChunk(Pos3i cPos, Chunk *chk) {
 	genNoise(cPos, chk);
-	genTreeMap(cPos, chk);
 	genMesh(cPos, chk);
-	placeTrees(chk);
+	if (cPos.y == 0) placeTrees(chk);
 
 	// awaiting retrival
 	chk->state = JobState::awaiting;

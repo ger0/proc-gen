@@ -5,43 +5,6 @@
 #include "utils.hpp"
 #include "main.hpp"
 
-template<typename T>
-Position<T> Position<T>::operator + (Position<T> &offset) const {
-	Position<T> npos;
-	npos.x = x + offset.x;
-	npos.y = y + offset.y;
-	npos.z = z + offset.z;
-	return npos;
-}
-
-template<typename T>
-Position<T> Position<T>::operator / (int div) const {
-	Position<T> npos;
-	npos.x = x / div;
-	npos.y = y / div;
-	npos.z = z / div;
-	return npos;
-}
-
-template<typename T>
-Position<T> Position<T>::operator * (int div) const {
-	Position<T> npos;
-	npos.x = x * div;
-	npos.y = y * div;
-	npos.z = z * div;
-	return npos;
-}
-
-template<typename T>
-template<typename Y>
-Position<T> Position<T>::offset(Y off_x, Y off_y, Y off_z) const {
-	Position<T> npos;
-	npos.x = x + T(off_x);
-	npos.y = y + T(off_y);
-	npos.z = z + T(off_z);
-	return npos;
-}
-
 float lerp(float v0, float v1, float t) {
 	if (t > 1.f || t < 0.f) {
 		LOG_WARN("BILINEAR INTERP PROBLEM! %f", t);
