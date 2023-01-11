@@ -15,8 +15,8 @@ struct Cylinder{
   	std::vector<unsigned int> indices; // indices to draw correct triangles
 
   	Cylinder(){};
-  	Cylinder(float sectorCount, float r, float h);
-  	void generate_indicis_of_cylinder(float sectorCount, float r, float h);
+  	Cylinder(float sectorCount, float R, float r, float h);
+  	void generate_indicis_of_cylinder(float sectorCount, float R, float r, float h);
   	void draw(GLFWwindow* window, glm::mat4 V, glm::mat4 P, glm::mat4 M);
 
 	// generates mesh out of the data with predefined colour

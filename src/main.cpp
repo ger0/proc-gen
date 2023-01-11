@@ -155,7 +155,7 @@ std::unordered_map<ChkHash, Chunk> chunkMap;
 // storage for biomes, 1 cell = 1 chunk
 std::unordered_map<ChkHash, BiomeChunk> biomeMap;
 // pre-generated trees
-array<TreeModel, 100> treemodels;
+array<TreeModel, 512> treemodels;
 
 struct Camera {
 	glm::vec3 pos = glm::vec3(0.f, 3.f, 3.f);
@@ -850,7 +850,7 @@ int main() {
 		genWater();
     	pregenTrees();
     	LOG_INFO("Done generating trees!");
-    	pregenChunks(8);
+    	pregenChunks(2);
     	// waiting for chunk generation to complete
     	LOG_INFO("Done generating chunks!");
     }

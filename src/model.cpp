@@ -8,10 +8,8 @@
 #include <boost/thread.hpp>
 #include <boost/lexical_cast.hpp>
 
-constexpr float CYLINDER_R = 0.30;
+constexpr float CYLINDER_R = 0.80;
 constexpr float CYLINDER_H = 2.5; 
-
-int DEPTH = 3;
 
 unsigned long getThreadId(){
     std::string threadId = boost::lexical_cast<std::string>(boost::this_thread::get_id());
@@ -21,10 +19,21 @@ unsigned long getThreadId(){
 }
 static unsigned threadId = getThreadId();
 
+Cylinder genBranch(float R, float r, float len) {
+    return Cylinder(7.0f * len, R, r, CYLINDER_H); //float sectorCount, float r, float h
+}
+
 Model::Model(float _angle_x, float _angle_y){
-  	branche = Cylinder(4.0f, CYLINDER_R, CYLINDER_H); //float sectorCount, float r, float h
-  	green_sphere = Sphere(5, 5, 4.8, 4.8, glm::vec3(0.0, 0.07, 0.01), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h
-  	brown_sphere = Sphere(5, 5 , 0.4, 0.4, glm::vec3(0.06, 0.02, 0.0), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h
+  	//branche = Cylinder(4.0f, CYLINDER_R, CYLINDER_R - 0.20f, CYLINDER_H); //float sectorCount, float r, float h
+  	DEPTH = 2 + rand() % 3;
+  	float R  = 0.4 + (rand() / float(RAND_MAX)) / 2.f;
+  	dr = R / 6;
+    currR = R;
+    printf("%f %f\n", dr, currR);
+    branche = genBranch(currR, currR - dr, 1.f);
+    float sph_size = 1.8 + 1.4 * rand() / RAND_MAX;
+  	green_sphere = Sphere(5, 5, sph_size, sph_size, glm::vec3(0.0, 0.07, 0.01), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h
+  	//brown_sphere = Sphere(5, 5 , 0.4, 0.4, glm::vec3(0.06, 0.02, 0.0), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h
 
   	//srand (0);
   	for (int i=0; i<DEPTH; i++){
@@ -68,10 +77,18 @@ Mesh Model::trunk(float size, int depth, glm::vec3 position, glm::mat4 M){
 
 Mesh Model::branch_one(float size, int depth, glm::vec3 position, glm::mat4 M){
     Mesh mesh;
-  	glm::mat4 P=glm::perspective(glm::radians(50.0f), 1.0f, 1.0f, 120.0f); //compute projection matrix
+
+    float R = currR - (DEPTH - depth) * dr;
+    float r = R - (DEPTH - depth + 1) * dr;
+    if (depth == 0) {
+        R = currR - (DEPTH - depth + 2) * dr;
+        r = currR - (DEPTH - depth + 3) * dr;
+    }
+    branche = genBranch(R, r, size);
 
   	M = glm::translate(M, position);
-  	M = glm::scale(M, glm::vec3(size, size, size));
+  	//M = glm::scale(M, glm::vec3(size, size, size));
+
   	auto b0 = branche.genMesh(M, glm::vec4(0.06, 0.02, 0.0, 1.0));
   	meshPush(mesh, b0);
 
@@ -96,10 +113,18 @@ Mesh Model::branch_one(float size, int depth, glm::vec3 position, glm::mat4 M){
 
 Mesh Model::branch_two(float size, int depth, glm::vec3 position,glm::mat4 M){
     Mesh mesh;
-  	glm::mat4 P=glm::perspective(glm::radians(50.0f), 1.0f, 1.0f, 120.0f); //compute projection matrix
+
+    float R = currR - (DEPTH - depth) * dr;
+    float r = R - (DEPTH - depth + 1) * dr;
+    if (depth == 0) {
+        R = currR - (DEPTH - depth + 2) * dr;
+        r = currR - (DEPTH - depth + 3) * dr;
+    }
+    branche = genBranch(R, r, size);
 
   	M=glm::translate(M, position);
-  	M = glm::scale(M, glm::vec3(size, size, size));
+  	//M = glm::scale(M, glm::vec3(size, size, size));
+
   	auto b0 = branche.genMesh(M, glm::vec4(0.06, 0.02, 0.0, 1.0));
   	meshPush(mesh, b0);
 
@@ -135,11 +160,18 @@ Mesh Model::branch_two(float size, int depth, glm::vec3 position,glm::mat4 M){
 
 Mesh Model::branch_three(float size, int depth, glm::vec3 position, glm::mat4 M){
     Mesh mesh;
-  	glm::mat4 P=glm::perspective(glm::radians(50.0f), 1.0f, 1.0f, 120.0f); //compute projection matrix
+
+    float R = currR - (DEPTH - depth) * dr;
+    float r = R - (DEPTH - depth + 1) * dr;
+    if (depth == 0) {
+        R = currR - (DEPTH - depth + 2) * dr;
+        r = currR - (DEPTH - depth + 3) * dr;
+    }
+    branche = genBranch(R, r, size);
 
   	M=glm::translate(M, position);
-  	M = glm::scale(M, glm::vec3(size, size, size));
-  	//branche.draw(P, M);
+  	//M = glm::scale(M, glm::vec3(size, size, size));
+
   	auto b0 = branche.genMesh(M, glm::vec4(0.06, 0.02, 0.0, 1.0));
   	meshPush(mesh, b0);
 
@@ -182,8 +214,17 @@ Mesh Model::branch_three(float size, int depth, glm::vec3 position, glm::mat4 M)
 Mesh Model::branch_four(float size, int depth, glm::vec3 position, glm::mat4 M){
     Mesh mesh;
 
+    float R = currR - (DEPTH - depth) * dr;
+    float r = R - (DEPTH - depth + 1) * dr;
+    if (depth == 0) {
+        R = currR - (DEPTH - depth + 2) * dr;
+        r = currR - (DEPTH - depth + 3) * dr;
+    }
+    branche = genBranch(R, r, size);
+
   	M=glm::translate(M, position);
-  	M = glm::scale(M, glm::vec3(size, size, size));
+  	//M = glm::scale(M, glm::vec3(size, size, size));
+
   	auto b0 = branche.genMesh(M, glm::vec4(0.06, 0.02, 0.0, 1.0));
   	meshPush(mesh, b0);
 

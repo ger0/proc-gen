@@ -18,12 +18,17 @@ constexpr float PI = 3.1415;
 struct Model{
   	Cylinder branche;
   	Sphere brown_sphere, green_sphere;
+  	int DEPTH = 3;
 
   	Model(float _angle_x = 0, float _angle_y = 0);
   	Mesh branch_one(float size, int depth, glm::vec3 position, glm::mat4 M);
   	Mesh branch_two(float size, int depth, glm::vec3 position, glm::mat4 M);
   	Mesh branch_three(float size, int depth, glm::vec3 position, glm::mat4 M);
   	Mesh branch_four(float size, int depth, glm::vec3 position, glm::mat4 M);
+
+	// branch radius
+  	float currR;
+  	float dr;
 
   	Mesh trunk(float size, int depth, glm::vec3 position, glm::mat4 M);
 

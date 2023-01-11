@@ -2,11 +2,11 @@
 #include <glm/gtc/type_ptr.hpp>
 #include "main.hpp"
 
-Cylinder::Cylinder(float sectorCount, float r, float h){
-  	generate_indicis_of_cylinder(sectorCount, r, h);
+Cylinder::Cylinder(float sectorCount, float R, float r, float h){
+  	generate_indicis_of_cylinder(sectorCount, R, r, h);
 }
 
-void Cylinder::generate_indicis_of_cylinder(float sectorCount, float r, float h) {
+void Cylinder::generate_indicis_of_cylinder(float sectorCount, float R, float r, float h) {
   	const float PI = 3.1415926f;
   	float sectorStep = 2 * PI / sectorCount;
   	float sectorAngle;  // radian
@@ -20,8 +20,8 @@ void Cylinder::generate_indicis_of_cylinder(float sectorCount, float r, float h)
   	for(int i = 0; i <= sectorCount; ++i)
   	{
       	sectorAngle = i * sectorStep;
-      	x = cos(sectorAngle) * r;
-      	y = sin(sectorAngle) * r;
+      	x = cos(sectorAngle) * R;
+      	y = sin(sectorAngle) * R;
       	verts.push_back(glm::vec3(x, 0, y));
       	norms.push_back(glm::vec3(cos(sectorAngle), x, sin(sectorAngle)));
   	}  
