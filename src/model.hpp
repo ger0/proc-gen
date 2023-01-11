@@ -19,17 +19,21 @@ struct Model{
   	Cylinder branche;
   	Sphere brown_sphere, green_sphere;
 
-  	Model(glm::vec3 _pos = glm::vec3(0, 0, 0), float _angle_x = 0, float _angle_y = 0);
-  	Mesh branch_one(float size, int depth, glm::vec3 position, glm::mat4 V, glm::mat4 M);
-  	Mesh branch_two(float size, int depth, glm::vec3 position, glm::mat4 V, glm::mat4 M);
-  	Mesh branch_three(float size, int depth, glm::vec3 position, glm::mat4 V, glm::mat4 M);
-  	Mesh branch_four(float size, int depth, glm::vec3 position, glm::mat4 V, glm::mat4 M);
+  	Model(float _angle_x = 0, float _angle_y = 0);
+  	Mesh branch_one(float size, int depth, glm::vec3 position, glm::mat4 M);
+  	Mesh branch_two(float size, int depth, glm::vec3 position, glm::mat4 M);
+  	Mesh branch_three(float size, int depth, glm::vec3 position, glm::mat4 M);
+  	Mesh branch_four(float size, int depth, glm::vec3 position, glm::mat4 M);
 
-  	Mesh trunk(float size, int depth, glm::vec3 position, glm::mat4 V, glm::mat4 M);
+  	Mesh trunk(float size, int depth, glm::vec3 position, glm::mat4 M);
+
+	std::vector<int> operations;
+	std::vector<std::vector<float>> sizemod;
+	std::vector<std::vector<float>> rotations;
 
   	glm::vec3 pos; // current position
 
-  	Mesh genTree(glm::vec3 position, glm::mat4 V, glm::vec3 scale, glm::mat4 M);
+  	Mesh genTree(glm::vec3 position, glm::vec3 scale, glm::mat4 M);
 
   	float angle_x; //current rotation angle of the object, x axis
   	float angle_y; //current rotation angle of the object, y axis

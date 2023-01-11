@@ -20,7 +20,8 @@
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/post.hpp>
 
-#include "Sphere.hpp"
+#include "main.hpp"
+
 #include "utils.hpp"
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_glfw.h"
@@ -33,8 +34,7 @@
 #include "log.hpp"
 
 #include "model.hpp"
-
-#include "main.hpp"
+#include "poisson_disk_sampling.h"
 
 // colours
 constexpr glm::vec4 waterColor(0.25, 0.516, 0.914, 0.46);
@@ -95,6 +95,25 @@ struct BiomeChunk {
 	}
 };
 
+void meshPush(Mesh &mesh, Mesh &val) {
+    mesh.insert(mesh.end(), val.begin(), val.end());
+}
+
+
+// Poisson disk sampling for trees
+struct TreeMap {
+	JobState state = none;
+	std::mutex mtx;
+	static constexpr int width = CHK_SIZE + 1;
+	using TreePlaces = array<float, width * width>;
+
+	TreePlaces map;
+
+	float& at(int x, int z) {
+		return map.at(x + z * width);
+	}
+};
+
 struct BiomeSamples {
 	array<float, 4> humidity;
 	array<float, 4> mountain;
@@ -106,24 +125,43 @@ struct BiomeSamples {
 	}
 };
 
+using TreeSamples = vector<array<float, 2>>;
+
 struct Chunk {
 	BiomeSamples biome;
-	// mesh vertex size
+	TreeSamples  treeMap;
+
+	// how many faces in the mesh to render
 	size_t indices = 0;
-	// after a thread generates the mesh, main thread will submit it to GPU
+	size_t treeIndices = 0;
+
+	// after a thread generates the mesh, the main thread will submit it to GPU
 	GLuint vbo;
-	vector<Vertex> mesh;
+	GLuint treeVbo;
+
+	Mesh mesh;
+	Mesh treeMesh;
 
 	// 3D noise used for terrain generation
 	ChkNoise noise;
+
 	// status
 	std::atomic<JobState> state = ATOMIC_VAR_INIT(JobState::none);
+	void clear() {
+		mesh.clear();
+		treeMesh.clear();
+		treeMap.clear();
+		mesh.shrink_to_fit();
+		treeMesh.shrink_to_fit();
+		treeMap.shrink_to_fit();
+	}
 };
 
 // storage for all chunks
 std::unordered_map<ChkHash, Chunk> chunkMap;
 // storage for biomes, 1 cell = 1 chunk
 std::unordered_map<ChkHash, BiomeChunk> biomeMap;
+std::unordered_map<ChkHash, TreeMap> treeMap;
 
 struct Camera {
 	glm::vec3 pos = glm::vec3(0.f, 3.f, 3.f);
@@ -141,9 +179,18 @@ struct Camera {
 	float pitch = 0.f;
 } camera;
 
-void drawChunk(Chunk &chk, ShaderProgram* sp) {
+uint cylVBO;
+uint cylSize;
+
+void drawTree(ShaderProgram *sp, glm::vec3 &pos) {
+	glm::mat4 M = glm::mat4(1.f);
+	M = glm::translate(M, pos);
+	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
+
 	glBindVertexArray(vao);
-	glBindBuffer(GL_ARRAY_BUFFER, chk.vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, cylVBO);
+
+	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
 
 	uint count = 3;
 	// passing position vector to vao
@@ -160,7 +207,32 @@ void drawChunk(Chunk &chk, ShaderProgram* sp) {
         	sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
 	glEnableVertexAttribArray(sp->a("color"));
 
-	glDrawArrays(GL_TRIANGLES, 0, chk.indices);
+	glDrawArrays(GL_TRIANGLES, 0, cylSize);
+}
+
+
+void drawVBO(GLuint vbo, uint indices, ShaderProgram* sp) {
+	glm::mat4 M = glm::mat4(1.f);
+	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
+	glBindVertexArray(vao);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+
+	uint count = 3;
+	// passing position vector to vao
+	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, pos));
+	glEnableVertexAttribArray(sp->a("vertex"));
+
+	// passing normal vector to vao
+	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, norm));
+	glEnableVertexAttribArray(sp->a("normal"));
+
+	glVertexAttribPointer(sp->a("color"), count + 1, GL_FLOAT, GL_FALSE,
+        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
+	glEnableVertexAttribArray(sp->a("color"));
+
+	glDrawArrays(GL_TRIANGLES, 0, indices);
 
 	glBindVertexArray(0);
 }
@@ -294,8 +366,6 @@ inline float& noiseAtPos(Pos3i pos, ChkNoise &noise) {
 
 // same as above + interpolation for floats
 inline float noiseAtPos(glm::vec3 pos, ChkNoise &noise) {
-	// no interpolation (poormans normal)
-	//return noiseAtPos(Pos3i{int(pos.x), int(pos.y), int(pos.z)}, noise);
     Vec3f b = floor(pos);
     Vec3f u = ceil(pos);
     float dx = pos.x - b.x;
@@ -418,6 +488,7 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 		}
 	}
 	mesh.shrink_to_fit();
+	chk->indices = mesh.size();
 }
 // -------------------------------------------------------
 
@@ -560,11 +631,47 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 	}}
 }
 
+void genTrees(Chunk &chk) {
+	auto& mesh = chk.treeMesh;
+	for (auto &tr : chk.treeMap) {
+		Model tree = Model();
+		auto pos = glm::vec3(tr[0], 16.f, tr[1]);
+		auto M = glm::translate(glm::mat4(1.f), pos);
+		auto scale = glm::vec3(1.f, 1.f, 1.f);
+		auto msh = tree.genTree(glm::vec3(0,0,0), scale, M);
+		meshPush(mesh, msh);
+	}
+    chk.treeIndices = mesh.size();
+	chk.treeMesh = mesh;
+}
+
+GLuint bindMesh(Mesh &mesh) {
+	GLuint vbo;
+	glGenBuffers(1, &vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
+         	(void*)mesh.data(), GL_STATIC_DRAW);
+    return vbo;
+}
+
+void genTreeMap(Pos3i &cPos, Chunk *chk) {
+	if (cPos.y != 0) return;
+
+	float r = 12.f;
+	auto kxmin = array<float, 2>{(float)cPos.x, (float)cPos.z};
+	auto kxmax = array<float, 2>{(float)cPos.x+CHK_SIZE, (float)cPos.z+CHK_SIZE};
+	//printf("x: %f - %f, y: %f - %f\n", kxmin[0], kxmin[1], kxmax[0], kxmax[1]);
+	auto hash = thinks::poisson_disk_sampling_internal::Hash(rand() % RAND_MAX);
+	chk->treeMap = thinks::PoissonDiskSampling(r, kxmin, kxmax, 6, hash);
+	//printf("random %d\n", rand() % RAND_MAX);
+}
+
 // generates chunk data for the Chunk passed as an argument
 void genChunk(Pos3i cPos, Chunk *chk) {
 	genNoise(cPos, chk);
+	genTreeMap(cPos, chk);
 	genMesh(cPos, chk);
-	chk->indices   = chk->mesh.size();
+	genTrees(*chk);
 
 	// awaiting retrival
 	chk->state = JobState::awaiting;
@@ -616,60 +723,6 @@ void genWater() {
          	(void*)verts.data(), GL_STATIC_DRAW);
 }
 
-uint cylVBO;
-uint cylSize;
-
-void genTree() {
-	Model tree = Model();
-	auto V = glm::mat4(1.f);
-	auto M = glm::mat4(1.f);
-	M = glm::translate(M, glm::vec3(1.f, 16.f, 1.f));
-	auto pos = glm::vec3(0.f, 0.f, 0.f);
-	auto scale = glm::vec3(1.f, 1.f, 1.f);
-	Mesh mesh = tree.genTree(pos, V, scale, M);
-
-	/* for (auto &v : mesh) {
-		printf("pos: %f %f %f norm: %f %f %f col: %f %f %f\n", 
-				v.pos.x, v.pos.y, v.pos.z, 
-				v.norm.x, v.norm.y, v.norm.z,
-				v.color.r, v.color.g, v.color.b);
-	} */
-
-
-	glGenBuffers(1, &cylVBO);
-	glBindBuffer(GL_ARRAY_BUFFER, cylVBO);
-	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
-         	(void*)mesh.data(), GL_STATIC_DRAW);
-    cylSize = mesh.size();
-}
-
-void drawCylinder(ShaderProgram *sp) {
-	glm::mat4 M = glm::mat4(1.f);
-	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
-
-	glBindVertexArray(vao);
-	glBindBuffer(GL_ARRAY_BUFFER, cylVBO);
-
-	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
-
-	uint count = 3;
-	// passing position vector to vao
-	glVertexAttribPointer(sp->a("vertex"), count, GL_FLOAT, GL_FALSE,
-        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, pos));
-	glEnableVertexAttribArray(sp->a("vertex"));
-
-	// passing normal vector to vao
-	glVertexAttribPointer(sp->a("normal"), count, GL_FLOAT, GL_FALSE,
-        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, norm));
-	glEnableVertexAttribArray(sp->a("normal"));
-
-	glVertexAttribPointer(sp->a("color"), count + 1, GL_FLOAT, GL_FALSE,
-        	sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
-	glEnableVertexAttribArray(sp->a("color"));
-
-	glDrawArrays(GL_TRIANGLES, 0, cylSize);
-}
-
 void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 	sp->use();
 
@@ -702,34 +755,32 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 		if (chk.state == JobState::awaiting) {
 			// submitting the mesh to gpu
 			if (chk.mesh.size() > 0) {
-				glBindBuffer(GL_ARRAY_BUFFER, chk.vbo);
-				glBufferData(GL_ARRAY_BUFFER, chk.indices * sizeof(Vertex),
-         				(void*)chk.mesh.data(), GL_STATIC_DRAW);
-         		chk.mesh.clear();
+				chk.vbo = bindMesh(chk.mesh);
 			}
+			if (chk.treeMesh.size() > 0) {
+				chk.treeVbo = bindMesh(chk.treeMesh);
+			}
+			chk.clear();
 			chk.state = JobState::generated;
-			drawChunk(chk, sp);
 		} else if (chk.state == JobState::none){
 			chk.state = JobState::delegated;
-			// vbo for the chunk
-			GLuint vbo;
-			glGenBuffers(1, &vbo);
-			chk.vbo = vbo;
 			// delegate chunk generation to a thread
 			boost::asio::post(pool, std::bind(genChunk, cPos, &chk));
 			//genChunk(cPos, &chk);
-		} else {
+		} 
+		if (chk.state == JobState::generated) {
 			if (y == 0 && z == 0 && x == 0) {
 				ImGui::Text("Biome:\n");
 				ImGui::Text("Sharpness: %.2f\n", chk.biome.avg(chk.biome.sharp));
 				ImGui::Text("Mountain:  %.2f\n", chk.biome.avg(chk.biome.mountain));
 				ImGui::Text("Humidity:  %.2f\n", chk.biome.avg(chk.biome.humidity));
 				ImGui::Text("Height:    %.2f\n", chk.biome.avg(chk.biome.height));
+				//printf("Trees: %lu\n", chk.treeIndices);
 			}
-			drawChunk(chk, sp); 
+			drawVBO(chk.vbo, chk.indices, sp); 
+			drawVBO(chk.treeVbo, chk.treeIndices, sp); 
 		}
 	}}}
-	drawCylinder(sp);
     drawWater(sp);
 	ImGui::End();
 }
@@ -792,9 +843,8 @@ int main() {
 			initProgram(window.get()),
 			shaderDestroyer);
 
+	srand(0);
 	genWater();
-	genTree();
-
 	// main loop
 	while (!glfwWindowShouldClose(window.get())) {
 		float currentFrame = glfwGetTime();
