@@ -1,5 +1,5 @@
 # Procedurally generated terrain prototype
-Procedurally generated terrain using simplex noise
+Procedurally generated terrain with biomes and procedurally generated vegetation
 
 ### dependencies:
 - cmake

@@ -4,3 +4,6 @@
 [submodule "submodules/lodepng"]
 	path = submodules/lodepng
 	url = https://github.com/lvandeve/lodepng.git
+[submodule "submodules/poisson-disk-sampling"]
+	path = submodules/poisson-disk-sampling
+	url = https://github.com/thinks/poisson-disk-sampling.git
