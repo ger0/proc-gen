@@ -21,7 +21,7 @@ constexpr uint WINDOW_H = 600;
 constexpr float ASPECT_RATIO = float(WINDOW_W) / WINDOW_H;
 constexpr float FOV = 90.f;
 
-constexpr int RENDER_DIST = 6;
+constexpr int RENDER_DIST = 5;
 
 // size of one chunk
 constexpr int CHK_SIZE = 32;
