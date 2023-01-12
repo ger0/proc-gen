@@ -36,21 +36,32 @@
 #include "model.hpp"
 #include "poisson_disk_sampling.h"
 
-
-// render distance
-constexpr int RENDER_DIST = 6;
-constexpr float Z_NEAR = 0.1f;
-constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
-
+// generation parameters
 constexpr float LVL_SAND = 2.f;
 constexpr float LVL_GRASS = 16.f;
 constexpr float LVL_DIRT = 48.f;
 constexpr float LVL_ROCK = 64.f;
 constexpr float LVL_SNOW = 128.f;
 
+constexpr float MIN_SHARP = 0.35;
+constexpr float MAX_SHARP = 0.50;
+constexpr float MIN_MOUNT = 0.1;
+constexpr float MAX_MOUNT = 128.f;
+constexpr float MIN_HEIGH = 0.1;
+constexpr float MAX_HEIGH = 128.f;
+constexpr float MIN_HUMID = 0.f;
+constexpr float MAX_HUMID = 1.f;
+constexpr float MIN_FORES = 0.f;
+constexpr float MAX_FORES = 10.f;
+
 // colours
 constexpr glm::vec4 waterColor(0.25, 0.516, 0.914, 0.46);
 constexpr glm::vec3 skyColor(0.45, 0.716, 0.914);
+
+// render distance
+constexpr int RENDER_DIST = 6;
+constexpr float Z_NEAR = 0.1f;
+constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
 
 // [TODO]: remove later
 Pos3i currChkPos;
@@ -340,7 +351,10 @@ int pFail(const char *message) {
 }
 
 // converts Position<uint> into a reference to an element in the noise array
-inline float& noiseAtPos(Pos3i pos, ChkNoise &noise) {
+inline float noiseAtPos(Pos3i pos, ChkNoise &noise) {
+	if (pos.x == INT_MIN) {
+		return -1.f;
+	}
 	auto x = pos.x + 1;
 	auto y = pos.y + 1;
 	auto z = pos.z + 1;
@@ -376,9 +390,6 @@ glm::vec3 calculateNormal(glm::vec3 v1, ChkNoise &noise) {
 	norm.z = noiseAtPos(v1 + glm::vec3(0, 0, 1), noise) - noiseAtPos(v1 + glm::vec3( 0, 0,-1), noise);
 	return -glm::normalize(norm);
 }
-
-constexpr float MIN_SHARP = 0.35;
-constexpr float MAX_SHARP = 0.50;
 
 void genTerrainType(Vertex &vert, BiomeSamples &biome, float x, float z) {
 	auto hght = bilinearInterp(biome.height,  x, z);
@@ -511,11 +522,11 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 }
 
 // [TODO:] seed consistency concern
-SimplexNoise hmapGen(0.02f, 3.f, 2.f, 0.5f);
-SimplexNoise mountGen(0.01f, 1.f, 2.f, 0.5f);
-SimplexNoise sharpGen(0.01f, 1.f, 2.f, 0.5f);
-SimplexNoise humidGen(0.1f, 1.f, 2.f, 0.5f);
-SimplexNoise forestGen(0.01f, 1.f, 2.f, 0.5f);
+SimplexNoise hmapGen(0.02f,   1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise mountGen(0.01f,  1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise sharpGen(0.01f,  1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise humidGen(0.1f,   1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise forestGen(0.01f, 1.f, 2.f, 0.5f); // max -- 2
 // checks if a heightmap for the position has been generated, 
 // if not then generate it and make other threads trying to 
 // access that heightmap wait until its finished
@@ -552,27 +563,28 @@ BiomeChunk &setupBiome(Pos3i &curr) {
 	for (int x = 0; x < bm.width; x++) {
 		auto offset = Pos3i{chkCoord.x + x, 0, chkCoord.z + z}; 
 
-		// mountainess 
-		auto wval = mountGen.fractal(octaves, offset.x, offset.z);
-		wval = (1.f + wval) / 2;
-		bm.at(bm.mountain, x, z) = wval;
+		auto mval = mountGen.fractal(octaves, offset.x, offset.z);
+		mval = (1.f + mval) / 2;
+		mval = glm::clamp(float(glm::exp(mval * 1.2) - 1.2), MIN_MOUNT, MAX_MOUNT);
+		bm.at(bm.mountain, x, z) = mval;
 
-		// pointiness 
 		auto sval = sharpGen.fractal(octaves, offset.x, offset.z);
-		sval = glm::clamp((sval + 1.9375f) / 12.f + 0.25f, MIN_SHARP, MAX_SHARP);
+		sval = glm::clamp((sval + 2.f) / 12.f + 0.25f, MIN_SHARP, MAX_SHARP);
 		bm.at(bm.sharp, x, z) = sval;
 
-		// height
-		auto hval = 0.5f + hmapGen.fractal(octaves, offset.x, offset.z) / 1.5f;
-		bm.at(bm.height, x, z) = hval;
+		auto hghval = 0.5f + hmapGen.fractal(octaves, offset.x, offset.z) / 1.5f;
+		hghval = glm::clamp(float(glm::exp(hghval * 1.1) - 1), MIN_HEIGH, MAX_HEIGH);
+		bm.at(bm.height, x, z) = hghval;
 
-		// humidity 
 		auto humval = humidGen.fractal(octaves, offset.x, offset.z);
 		humval = (humval + 2.f) / 4.f;
+		// scaling 
+		humval = (humval + MIN_HUMID) * (MAX_HUMID - MIN_HUMID);
 		bm.at(bm.humidity, x, z) = humval;
 
-		// forest
-		auto forestval = (forestGen.fractal(octaves, offset.x, offset.z) + 2.f) * 2.5;
+		// forest (0, 10)
+		auto forestval = (forestGen.fractal(octaves, offset.x, offset.z) + 2.f) / 4.f;
+		forestval = (forestval + MIN_FORES) * (MAX_FORES - MIN_FORES);
 		bm.at(bm.forest, x, z) = forestval;
 	}}
 
@@ -649,23 +661,30 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 		// roundness
 		auto sharp = bilinearInterp(s, relx, relz);
 		// height scale
-		auto cutoff = bilinearInterp(h, relx, relz);
+		auto height = bilinearInterp(h, relx, relz);
 		// humidity
 		auto humid = bilinearInterp(w, relx, relz) / 5;
 		// exponential scale of the noise y value, and the additional heightmap
 		auto mountn = bilinearInterp(m, relx, relz);
-		auto yscale = glm::clamp(float(glm::exp(mountn * 1.2) - 1.2), 0.1f, 128.f);
-		auto hflat = glm::clamp(float(glm::exp(cutoff * 1.1) - 1), 0.1f, 128.f);
 
 		for (int y = 0; y < NOISE_H; y++) {
-			noiseGen = SimplexNoise(0.01f, 1.f, 2.f, sharp);
-			auto pos = Pos3i{x + curr.x - 1, y + curr.y - 1, z + curr.z - 1};
-			float val;
 			//auto yscale = 0.1f + mountn * 1.5f;
 			// 3D noise generation
-			val = noiseGen.fractal(octaves, pos.x, pos.y / yscale, pos.z);
-			// summing up the values
-			val += (-humid) + hflat - pos.y / (yscale * CHK_SIZE);
+			auto pos = Pos3i{x + curr.x - 1, y + curr.y - 1, z + curr.z - 1};
+			float val;
+			val = -humid + height - pos.y / (mountn * CHK_SIZE);
+			if (0.f > 2 + val) {
+				val = -1.f;
+				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
+				continue;
+			} else if (0.f < -2 + val) {
+				val = 1.f;
+				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
+				continue;
+			}
+
+			noiseGen = SimplexNoise(0.01f, 1.f, 2.f, sharp);
+			val += noiseGen.fractal(octaves, pos.x, pos.y / mountn, pos.z);
 			noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 		}
 	}}
@@ -769,7 +788,7 @@ void genChunk(Pos3i cPos, Chunk *chk) {
 void pregenChunks(int dist = 8) {
 	boost::asio::thread_pool chPool(std::thread::hardware_concurrency());
 	for (int x = -dist; x <= dist; x++) {
-	for (int y = -2; y <= 3; y++) {
+	for (int y = -1; y <= 3; y++) {
 	for (int z = -dist; z <= dist; z++) {
 		Pos3i cPos = {
 			.x = x * CHK_SIZE,
@@ -988,7 +1007,7 @@ int main() {
     	pregenTrees();
     	LOG_INFO("Done generating trees!");
     	// waiting for chunk generation to complete
-    	pregenChunks();
+    	//pregenChunks(16);
     	LOG_INFO("Done generating chunks!");
     }
 	// main loop
