@@ -66,7 +66,7 @@ constexpr glm::vec4 waterColor(0.15, 0.216, 0.614, 0.46);
 constexpr glm::vec3 skyColor(0.45, 0.716, 0.914);
 
 // render distance
-constexpr int RENDER_DIST = 8;
+constexpr int RENDER_DIST = 9;
 constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
 
