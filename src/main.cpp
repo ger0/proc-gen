@@ -40,17 +40,21 @@
 constexpr float LVL_SAND = 2.f;
 constexpr float LVL_GRASS = 16.f;
 constexpr float LVL_DIRT = 48.f;
-constexpr float LVL_ROCK = 64.f;
+constexpr float LVL_ROCK = 72.f;
 constexpr float LVL_SNOW = 128.f;
 
 constexpr float MIN_SHARP = 0.35;
 constexpr float MAX_SHARP = 0.50;
+
 constexpr float MIN_MOUNT = 0.1;
-constexpr float MAX_MOUNT = 128.f;
+constexpr float MAX_MOUNT = 2.5f;
+
 constexpr float MIN_HEIGH = 0.1;
 constexpr float MAX_HEIGH = 128.f;
+
 constexpr float MIN_HUMID = 0.f;
 constexpr float MAX_HUMID = 1.f;
+
 constexpr float MIN_FORES = 0.f;
 constexpr float MAX_FORES = 10.f;
 
@@ -59,7 +63,7 @@ constexpr glm::vec4 waterColor(0.25, 0.516, 0.914, 0.46);
 constexpr glm::vec3 skyColor(0.45, 0.716, 0.914);
 
 // render distance
-constexpr int RENDER_DIST = 6;
+constexpr int RENDER_DIST = 8;
 constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
 
@@ -397,8 +401,10 @@ void genTerrainType(Vertex &vert, BiomeSamples &biome, float x, float z) {
 	auto shrp = bilinearInterp(biome.sharp,   x, z);
 	auto humd = bilinearInterp(biome.humidity,x, z);
 
-	auto mountainH = LVL_ROCK * (0.5 + mntn * hght);
-	auto dirtH = LVL_DIRT * (0.5 + mntn * hght);
+	auto hscale = shrp * 2.25f;
+
+	auto mtnH = LVL_ROCK * (0.25 + mntn) * hscale;
+	auto dirtH = LVL_DIRT * (0.25 + mntn) * hscale;
 
 	glm::vec4 humidScale = glm::vec4(humd, humd, humd, 1.f);
 
@@ -421,18 +427,18 @@ void genTerrainType(Vertex &vert, BiomeSamples &biome, float x, float z) {
 		vert.color = colRock;
 	}
 	// mountain (rock -> snow)
-	else if (vert.pos.y >= mountainH) {
-		auto scale = (vert.pos.y - mountainH) / LVL_SNOW;
+	else if (vert.pos.y >= mtnH) {
+		auto scale = (vert.pos.y - mtnH) / LVL_SNOW;
 		vert.color = glm::mix(colRock1, colSnow, scale);
 		// grass if its still flat
-		if (dotProd > 0.9) {
+		if (dotProd > 0.85) {
 			vert.color = glm::mix(colGrassShr, vert.color, scale);
 		}
 	} 
 	// dirt mountain (dirt -> rock)
 	else if (vert.pos.y >= dirtH) {
-		auto scale = (vert.pos.y - dirtH) / LVL_ROCK;
-		vert.color = glm::mix(colDirt, colRock, scale);
+		auto scale = (vert.pos.y - dirtH) / (mtnH - dirtH);
+		vert.color = glm::mix(colDirt, colRock1, scale);
 		// grass if its still flat
 		if (dotProd > 0.8) vert.color = colGrassShr;
 	}
@@ -522,11 +528,11 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 }
 
 // [TODO:] seed consistency concern
-SimplexNoise hmapGen(0.02f,   1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise mountGen(0.01f,  1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise sharpGen(0.01f,  1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise humidGen(0.1f,   1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise forestGen(0.01f, 1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise hmapGen(  0.03f, 1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise mountGen( 0.02f, 1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise sharpGen( 0.01f, 1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise humidGen( 0.01f, 1.f, 2.f, 0.5f); // max -- 2
+SimplexNoise forestGen(0.1f,  1.f, 2.f, 0.5f); // max -- 2
 // checks if a heightmap for the position has been generated, 
 // if not then generate it and make other threads trying to 
 // access that heightmap wait until its finished
@@ -563,17 +569,19 @@ BiomeChunk &setupBiome(Pos3i &curr) {
 	for (int x = 0; x < bm.width; x++) {
 		auto offset = Pos3i{chkCoord.x + x, 0, chkCoord.z + z}; 
 
+		// (-1; 2)
 		auto mval = mountGen.fractal(octaves, offset.x, offset.z);
 		mval = (1.f + mval) / 2;
-		mval = glm::clamp(float(glm::exp(mval * 1.2) - 1.2), MIN_MOUNT, MAX_MOUNT);
 		bm.at(bm.mountain, x, z) = mval;
 
 		auto sval = sharpGen.fractal(octaves, offset.x, offset.z);
-		sval = glm::clamp((sval + 2.f) / 12.f + 0.25f, MIN_SHARP, MAX_SHARP);
+		sval = glm::clamp((sval + 2.f) / 14.f + 0.25f, MIN_SHARP, MAX_SHARP);
 		bm.at(bm.sharp, x, z) = sval;
 
-		auto hghval = 0.5f + hmapGen.fractal(octaves, offset.x, offset.z) / 1.5f;
-		hghval = glm::clamp(float(glm::exp(hghval * 1.1) - 1), MIN_HEIGH, MAX_HEIGH);
+		// (-0.833; 1.833)
+		auto hghval = hmapGen.fractal(octaves, offset.x, offset.z);
+		hghval = 0.5f + hghval / 1.5f;
+		hghval = glm::clamp(float(glm::exp(hghval / 1.2) - 1), MIN_HEIGH, MAX_HEIGH);
 		bm.at(bm.height, x, z) = hghval;
 
 		auto humval = humidGen.fractal(octaves, offset.x, offset.z);
@@ -660,19 +668,21 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 
 		// roundness
 		auto sharp = bilinearInterp(s, relx, relz);
-		// height scale
+		// height scale 0 - 1
 		auto height = bilinearInterp(h, relx, relz);
 		// humidity
 		auto humid = bilinearInterp(w, relx, relz) / 5;
 		// exponential scale of the noise y value, and the additional heightmap
 		auto mountn = bilinearInterp(m, relx, relz);
 
+		auto turbGen = SimplexNoise(0.33f, 1.f, 2.f, 0.5);
 		for (int y = 0; y < NOISE_H; y++) {
 			//auto yscale = 0.1f + mountn * 1.5f;
 			// 3D noise generation
 			auto pos = Pos3i{x + curr.x - 1, y + curr.y - 1, z + curr.z - 1};
+			float yscale = glm::clamp(float(glm::exp(mountn * 1.15) - 1), MIN_MOUNT, MAX_MOUNT);
 			float val;
-			val = -humid + height - pos.y / (mountn * CHK_SIZE);
+			val = -humid + height - pos.y / (yscale * CHK_SIZE);
 			if (0.f > 2 + val) {
 				val = -1.f;
 				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
@@ -683,8 +693,9 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 				continue;
 			}
 
-			noiseGen = SimplexNoise(0.01f, 1.f, 2.f, sharp);
-			val += noiseGen.fractal(octaves, pos.x, pos.y / mountn, pos.z);
+			auto turbulence = turbGen.noise(pos.x, pos.z) / 75.f;
+			noiseGen = SimplexNoise(0.012f, 1.f, 2.f, sharp);
+			val += noiseGen.fractal(octaves, pos.x, pos.y / yscale, pos.z) + turbulence;
 			noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 		}
 	}}
@@ -1007,7 +1018,8 @@ int main() {
     	pregenTrees();
     	LOG_INFO("Done generating trees!");
     	// waiting for chunk generation to complete
-    	//pregenChunks(16);
+    	LOG_INFO("Map pre-generation...");
+    	pregenChunks(16);
     	LOG_INFO("Done generating chunks!");
     }
 	// main loop
