@@ -15,28 +15,6 @@ using uint = unsigned;
 template<typename... T>
 using Uniq_Ptr = std::unique_ptr<T...>;
 
-constexpr const char* WINDOW_TITLE = "GLTRY";
-constexpr uint WINDOW_W = 800;
-constexpr uint WINDOW_H = 600;
-constexpr float ASPECT_RATIO = float(WINDOW_W) / WINDOW_H;
-constexpr float FOV = 90.f;
-
-// size of one chunk
-constexpr int CHK_SIZE = 32;
-constexpr int MAP_W = CHK_SIZE;
-constexpr int MAP_H = CHK_SIZE;
-
-// size of the noise array 
-constexpr uint NOISE_W = MAP_W + 3;
-constexpr uint NOISE_H = MAP_H + 3;
-
-// used for hashing
-using ChkHash = uint64_t;
-
-using ChkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
-// biome map (temporary // more biomes tbd)
-using SmoothMap = array<float, NOISE_W * NOISE_W>;
-
 // iso
 constexpr float THRESHOLD = 0.f;
 

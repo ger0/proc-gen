@@ -28,7 +28,6 @@
 #include "imgui/imgui_impl_opengl3.h"
 
 #include "SimplexNoise/SimplexNoise.h"
-#include "lodepng/lodepng.h"
 #include "shaderprogram.hpp"
 #include "marchingcubes.hpp"
 #include "log.hpp"
@@ -38,6 +37,11 @@
 
 uint SEED;
 GLuint m_depthTexture;
+
+// shader settings
+constexpr auto  SUN_DIRECTION = glm::vec3(0, 1, -0.12);
+constexpr float FOG_DENSITY   = 0.0036;
+constexpr float FOG_GRADIENT  = 8.0;
 
 // generation parameters
 constexpr float LVL_SAND = 2.f;
@@ -65,8 +69,30 @@ constexpr float MAX_FORES = 10.f;
 constexpr glm::vec4 waterColor(0.15, 0.216, 0.614, 0.46);
 constexpr glm::vec3 skyColor(0.45, 0.716, 0.914);
 
+constexpr const char* WINDOW_TITLE = "Proc-Gen";
+constexpr uint WINDOW_W = 1280;
+constexpr uint WINDOW_H = 720;
+constexpr float ASPECT_RATIO = float(WINDOW_W) / WINDOW_H;
+constexpr float FOV = 90.f;
+
+// size of one chunk
+constexpr int CHK_SIZE = 32;
+constexpr int MAP_W = CHK_SIZE;
+constexpr int MAP_H = CHK_SIZE;
+
+// size of the noise array 
+constexpr uint NOISE_W = MAP_W + 3;
+constexpr uint NOISE_H = MAP_H + 3;
+
+// used for hashing
+using ChkHash = uint64_t;
+
+using ChkNoise = array<float, NOISE_W * NOISE_W * NOISE_H>;
+// biome map (temporary // more biomes tbd)
+using SmoothMap = array<float, NOISE_W * NOISE_W>;
+
 // render distance
-constexpr int RENDER_DIST = 9;
+constexpr int RENDER_DIST = 8;
 constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
 
@@ -427,12 +453,12 @@ bool testTreePlane(Pos3i &s, ChkNoise &density) {
 		for (int y : {0, 1}) {
 			Pos3i offset = {x, y, z};
 			offset = offset + s;
-			if (noiseAtPos(offset, density) < 0.0f) return false;
+			if (noiseAtPos(offset, density) < THRESHOLD) return false;
 		}
 		for (int y: {3}) {
 			Pos3i offset = {x, y, z};
 			offset = offset + s;
-			if (noiseAtPos(offset, density) > 0.f) return false;
+			if (noiseAtPos(offset, density) > THRESHOLD) return false;
 		}
 	}}
 	for (int x : {0, 1}) {
@@ -440,7 +466,7 @@ bool testTreePlane(Pos3i &s, ChkNoise &density) {
 		for (int y : {2}) {
 			Pos3i offset = {x, y, z};
 			offset = offset + s;
-			if (noiseAtPos(offset, density) < 0.0f) return false;
+			if (noiseAtPos(offset, density) < THRESHOLD) return false;
 		}
 	}}
 	return true;
@@ -787,7 +813,7 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 		auto humid = bilinearInterp(w, relx, relz) / 5;
 		// exponential scale of the noise y value, and the additional heightmap
 		auto mountn = bilinearInterp(m, relx, relz);
-
+		// turbulence
 		auto turbGen = SimplexNoise(0, 0.33f, 1.f, 2.f, 0.5);
 		for (int y = 0; y < NOISE_H; y++) {
 			//auto yscale = 0.1f + mountn * 1.5f;
@@ -796,11 +822,11 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 			float yscale = glm::clamp(float(glm::exp(mountn * 1.15) - 1), MIN_MOUNT, MAX_MOUNT);
 			float val;
 			val = -humid + height - pos.y / (yscale * CHK_SIZE);
-			if (0.f > 2 + val) {
+			if (THRESHOLD > 2 + val) {
 				val = -1.f;
 				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 				continue;
-			} else if (0.f < -2 + val) {
+			} else if (THRESHOLD < -2 + val) {
 				val = 1.f;
 				noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 				continue;
@@ -1069,7 +1095,9 @@ int main() {
 		glUniform1f(sp->u("far"), Z_FAR);
 		glUniform1f(sp->u("near"), Z_NEAR);
 		glUniform3fv(sp->u("sunDir"), 1, glm::value_ptr(
-					glm::normalize(glm::vec3(0, 1, -0.12))));
+					glm::normalize(SUN_DIRECTION)));
+		glUniform1f(sp->u("density"),  FOG_DENSITY);
+		glUniform1f(sp->u("gradient"), FOG_GRADIENT);
 		return sp;
 	};
 
@@ -1105,7 +1133,7 @@ int main() {
     	LOG_INFO("Done generating trees!");
     	// waiting for chunk generation to complete
     	LOG_INFO("Map pre-generation...");
-    	pregenChunks(24);
+    	pregenChunks(12);
     	LOG_INFO("Done generating chunks!");
     }
 	// main loop

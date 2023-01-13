@@ -11,7 +11,7 @@ out vec3 vertPos;
 out vec4 iColor;
 out float visibility;
 
-const float density  = 0.002;
+const float density  = 0.007;
 const float gradient = 10.0;
 
 void main() {

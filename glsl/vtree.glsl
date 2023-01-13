@@ -11,8 +11,8 @@ out vec3 vertPos;
 out vec4 iColor;
 out float visibility;
 
-const float density  = 0.002;
-const float gradient = 10.0;
+uniform float density;
+uniform float gradient;
 
 void main() {
 	gl_Position = P * V * M * vec4(vertex, 1.0);

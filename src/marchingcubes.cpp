@@ -316,7 +316,7 @@ int polygonise(array<float, 8> &grid, vector<Vertex> &verts) {
     auto constexpr &off = marching_cubes_offsets;
 
     for (uint16_t i = 0; i < 8; i++) {
-        cube |= (grid[i] > 0.f) << i;
+        cube |= (grid[i] > THRESHOLD) << i;
     }
 
     if (edgeTable[cube] == 0) {
