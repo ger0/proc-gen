@@ -1,8 +1,5 @@
 #pragma once
 
-// only temporary
-#define DEBUG
-
 // logs
 #ifdef DEBUG
 constexpr const char* NRM = "\x1B[0m";

@@ -43,4 +43,4 @@ using Pos3i = Position<int>;
 
 float trilinearInterp(array<float, 8> &v, float &x, float &y, float &z);
 float bilinearInterp(array<float, 4> &v, float &x, float &y);
-float lerp(float v0, float v1, float t);
+float flerp(float v0, float v1, float t);

@@ -26,12 +26,12 @@ Cylinder genBranch(float R, float r, float len) {
 Model::Model(float _angle_x, float _angle_y){
   	//branche = Cylinder(4.0f, CYLINDER_R, CYLINDER_R - 0.20f, CYLINDER_H); //float sectorCount, float r, float h
   	DEPTH = 2 + rand() % 3;
-  	float R  = 0.4 + (rand() / float(RAND_MAX)) / 2.f;
+  	float R  = 0.5 + (rand() / float(RAND_MAX)) / 2.f;
   	dr = R / 6;
     currR = R;
     branche = genBranch(currR, currR - dr, 1.f);
     float sph_size = 1.8 + 1.4 * rand() / RAND_MAX;
-  	green_sphere = Sphere(5, 5, sph_size, sph_size, glm::vec3(0.0, 0.07, 0.01), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h
+  	green_sphere = Sphere(5, 5, sph_size, sph_size, glm::vec3(0.038, 0.10, 0.04), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h
   	//brown_sphere = Sphere(5, 5 , 0.4, 0.4, glm::vec3(0.06, 0.02, 0.0), glm::vec3(0.5, 0.5, 0.3)); //float sectorCount,float stackCount, float radius, float h
 
   	//srand (0);

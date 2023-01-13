@@ -1,9 +1,6 @@
 [submodule "submodules/SimplexNoise"]
 	path = submodules/SimplexNoise
-	url = https://github.com/SRombauts/SimplexNoise.git
-[submodule "submodules/lodepng"]
-	path = submodules/lodepng
-	url = https://github.com/lvandeve/lodepng.git
+	url = https://github.com/akriegman/SimplexNoise
 [submodule "submodules/poisson-disk-sampling"]
 	path = submodules/poisson-disk-sampling
 	url = https://github.com/thinks/poisson-disk-sampling.git

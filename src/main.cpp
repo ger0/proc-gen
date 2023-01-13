@@ -36,11 +36,14 @@
 #include "model.hpp"
 #include "poisson_disk_sampling.h"
 
+uint SEED;
+GLuint m_depthTexture;
+
 // generation parameters
 constexpr float LVL_SAND = 2.f;
-constexpr float LVL_GRASS = 16.f;
+constexpr float LVL_GRASS= 16.f;
 constexpr float LVL_DIRT = 48.f;
-constexpr float LVL_ROCK = 72.f;
+constexpr float LVL_ROCK = 96.f;
 constexpr float LVL_SNOW = 128.f;
 
 constexpr float MIN_SHARP = 0.35;
@@ -59,7 +62,7 @@ constexpr float MIN_FORES = 0.f;
 constexpr float MAX_FORES = 10.f;
 
 // colours
-constexpr glm::vec4 waterColor(0.25, 0.516, 0.914, 0.46);
+constexpr glm::vec4 waterColor(0.15, 0.216, 0.614, 0.46);
 constexpr glm::vec3 skyColor(0.45, 0.716, 0.914);
 
 // render distance
@@ -72,6 +75,8 @@ Pos3i currChkPos;
 boost::asio::thread_pool pool(std::thread::hardware_concurrency());
 
 GLuint vao;
+//GLuint fbo;
+
 // used to draw water on y = 0
 GLuint waterVBO;
 
@@ -224,7 +229,18 @@ struct Camera {
 } camera;
 
 void drawVBO(GLuint vbo, uint indices, ShaderProgram* sp, glm::mat4 M = glm::mat4(1.f)) {
+	sp->use();
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, m_depthTexture);
+
+	glm::mat4 V = glm::lookAt(camera.pos, camera.pos + camera.target, camera.up);
+	glm::mat4 P = glm::perspective(glm::radians(FOV), ASPECT_RATIO, Z_NEAR, Z_FAR);
+
 	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
+	glUniform3fvARB(sp->u("cameraPos"), 1, glm::value_ptr(camera.pos));
+	glUniformMatrix4fv(sp->u("V"), 1, false, glm::value_ptr(V));
+	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
+
 	glBindVertexArray(vao);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo);
 
@@ -317,7 +333,7 @@ void windowResizeCallback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
-ShaderProgram* initProgram(GLFWwindow *window) {
+void initProgram(GLFWwindow *window) {
 	LOG_INFO("Initialising openGL...");
 #ifdef DEBUG
 	//glEnable(GL_DEBUG_OUTPUT);
@@ -339,14 +355,15 @@ ShaderProgram* initProgram(GLFWwindow *window) {
 
 	glfwSetWindowSizeCallback(window, windowResizeCallback);
 
-	ShaderProgram* sp = new ShaderProgram("glsl/vshad.glsl", "glsl/fshad.glsl");
-	sp->use();
-	glUniform3fvARB(sp->u("skyColor"), 1, glm::value_ptr(skyColor));
+
+	// depth texture
+	glGenTextures(1, &m_depthTexture);
 
 	// generating buffers
 	glGenVertexArrays(1, &vao);
-	glBindVertexArray(vao);
-	return sp;
+	//glBindVertexArray(vao);
+	//glGenFramebuffers(1, &fbo);
+	//glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 }
 
 int pFail(const char *message) {
@@ -385,6 +402,105 @@ inline float noiseAtPos(glm::vec3 pos, ChkNoise &noise) {
     return trilinearInterp(v, dx, dy, dz);
 }
 
+// ---------------------------- TREES -------------------------------------
+void drawTrees(vector<Tree> trees, ShaderProgram *sp) {
+	glDisable(GL_CULL_FACE);
+	//glUniform1i(sp->u("isFlat"), GLint(1));
+	for (auto &tree : trees) {
+		glm::mat4 M = glm::mat4(1.f);
+		M = glm::translate(M, tree.position);
+		M = glm::rotate(M, tree.rotation, glm::vec3(0, 1, 0));
+		M = glm::rotate(M, tree.skew, glm::vec3(1, 0, 0));
+		drawVBO(tree.model.vbo, tree.model.indices, sp, M);
+	}
+}
+
+void assignTreeMap(Pos3i &chkPos, BiomeChunk &bm, Chunk &chk) {
+	Pos3i cPos = chkPos * CHK_SIZE;
+	chk.treeMap = &bm.treeMap[Chunk::hasher(cPos)];
+}
+
+// testing whether there is enough space for a tree
+bool testTreePlane(Pos3i &s, ChkNoise &density) {
+	for (int x : {-1, 0, 1, 2}) {
+	for (int z : {-1, 0, 1, 2}) {
+		for (int y : {0, 1}) {
+			Pos3i offset = {x, y, z};
+			offset = offset + s;
+			if (noiseAtPos(offset, density) < 0.0f) return false;
+		}
+		for (int y: {3}) {
+			Pos3i offset = {x, y, z};
+			offset = offset + s;
+			if (noiseAtPos(offset, density) > 0.f) return false;
+		}
+	}}
+	for (int x : {0, 1}) {
+	for (int z : {0, 1}) {
+		for (int y : {2}) {
+			Pos3i offset = {x, y, z};
+			offset = offset + s;
+			if (noiseAtPos(offset, density) < 0.0f) return false;
+		}
+	}}
+	return true;
+}
+
+// [TODO:] refactor this shit
+void placeTrees(Pos3i &cPos, Chunk *chk) {
+	auto &rd = rand;
+	auto &map = *chk->treeMap;
+
+	map.mtx.lock();
+	auto &vec = map.vec;
+	// select trees
+	auto iter = vec.begin();
+	while(iter != vec.end()) {
+		auto &t = *iter;
+		bool candidate = false;
+		int height = CHK_SIZE - 2;
+		Pos3i sample = {
+			int(glm::clamp(glm::floor(t[0]), 1.f, float(CHK_SIZE))),
+			height, 
+			int(glm::clamp(glm::floor(t[1]), 1.f, float(CHK_SIZE))),
+		};
+		while (height > 0 && candidate == false) {
+			height--;
+			sample.y = height;
+			candidate = testTreePlane(sample, *chk->noise);
+		}
+		if (candidate) {
+			if (height + cPos.y > LVL_SAND) {
+				// selecting one of the pregenerated models
+				auto &model = treemodels.at(rd() % treemodels.size());
+				// y rotation
+				float rotation = 2 * glm::pi<float>() * (rd() / float(RAND_MAX));
+				// skew : -pi/32 -> +pi/32 angle
+				float skew = glm::pi<float>() / 32.f + 
+					(glm::pi<float>() / 16.f) * (rd() / float(RAND_MAX));
+				auto position  = glm::vec3(
+						cPos.x + t[0], 
+						height + 1 + cPos.y, 
+						cPos.z + t[1]
+						);
+				Tree tree = {
+					.position 	= position,
+					.rotation 	= rotation,
+					.skew 		= skew,
+					.model  	= model
+				};
+				chk->trees.push_back(tree);
+			}
+			// erasing the position from the sample vector
+			iter = vec.erase(iter);
+		}
+		else iter++;
+	}
+	map.mtx.unlock();
+}
+// ------------------------------------------------------------------------
+
+
 glm::vec3 calculateNormal(glm::vec3 v1, ChkNoise &noise) {
 	// derivatives to figure out normal by using cross product
 	// v1 - position of the vertex in the world space based on the noise
@@ -401,29 +517,29 @@ void genTerrainType(Vertex &vert, BiomeSamples &biome, float x, float z) {
 	auto shrp = bilinearInterp(biome.sharp,   x, z);
 	auto humd = bilinearInterp(biome.humidity,x, z);
 
-	auto hscale = shrp * 2.25f;
+	//auto hscale = shrp * 2.25f;
 
-	auto mtnH = LVL_ROCK * (0.25 + mntn) * hscale;
-	auto dirtH = LVL_DIRT * (0.25 + mntn) * hscale;
+	auto mtnH = LVL_ROCK * (0.45 + shrp);
+	auto dirtH = LVL_DIRT * (0.45 + mntn);
 
 	glm::vec4 humidScale = glm::vec4(humd, humd, humd, 1.f);
 
-	constexpr glm::vec4 colMask    (0.26,  0.26,  0.03, 0.0);
 	constexpr glm::vec4 colSandDp  (0.03,  0.03,  0.05, 1.0); // underwater sand
 	constexpr glm::vec4 colSand    (0.29,  0.29,  0.08, 1.0); // sand
-	constexpr glm::vec4 colGrass   (0.0,   0.107, 0.03, 1.0); // grass
-	constexpr glm::vec4 colGrassWet(0.058, 0.17,  0.0,  1.0); // humid grass
-	constexpr glm::vec4 colGrassShr(0.066, 0.10,  0.04, 1.0); // sharp grass
-	constexpr glm::vec4 colRock    (0.16,  0.16,  0.16, 1.0); // rock
-	constexpr glm::vec4 colRock1   (0.11,  0.12,  0.13, 1.0); // dark rock
+	constexpr glm::vec4 colGrass   (0.014, 0.084, 0.018, 1.0); // grass
+	constexpr glm::vec4 colGrassWet(0.048, 0.16,  0.04,  1.0);// humid grass
+	constexpr glm::vec4 colGrassShr(0.066, 0.10,  0.03, 1.0); // sharp grass
+	constexpr glm::vec4 colRock    (0.46,  0.46,  0.46, 1.0); // rock
+	constexpr glm::vec4 colRock1   (0.32,  0.33,  0.34, 1.0); // dark rock
 	constexpr glm::vec4 colSnow    (0.8,   0.8,   0.8,  1.0); // snow
-	constexpr glm::vec4 colDirt    (0.11,  0.06, 0.009, 1.0); // dirt
+	constexpr glm::vec4 colDirt    (0.21,  0.09,  0.07, 1.0); // dirt
+	constexpr glm::vec4 colDirt1   (0.09,  0.05,  0.03, 1.0); // mountain dirt
 
 	// calculating the angle of the surface
 	auto dotProd = glm::dot(vert.norm, camera.up);
 
 	// rock - angle
-	if (dotProd < 0.3) {
+	if (dotProd < 0.2) {
 		vert.color = colRock;
 	}
 	// mountain (rock -> snow)
@@ -438,12 +554,12 @@ void genTerrainType(Vertex &vert, BiomeSamples &biome, float x, float z) {
 	// dirt mountain (dirt -> rock)
 	else if (vert.pos.y >= dirtH) {
 		auto scale = (vert.pos.y - dirtH) / (mtnH - dirtH);
-		vert.color = glm::mix(colDirt, colRock1, scale);
+		vert.color = glm::mix(colDirt1, colRock1, scale);
 		// grass if its still flat
 		if (dotProd > 0.8) vert.color = colGrassShr;
 	}
 	// dirt - angle
-	else if (dotProd < 0.55) {
+	else if (dotProd < 0.4) {
 		vert.color = colDirt;
 	} 
 	// dark sand below water level
@@ -458,10 +574,11 @@ void genTerrainType(Vertex &vert, BiomeSamples &biome, float x, float z) {
 	// grass
 	else {
 		auto sharpScal = (shrp - MIN_SHARP) * (1.f / (MAX_SHARP - MIN_SHARP));
-		auto dirtScal  = glm::clamp((vert.pos.y - LVL_GRASS) / LVL_DIRT, 0.f, 1.f);
+		auto scal = glm::clamp(float(vert.pos.y - LVL_GRASS) / float(dirtH - LVL_GRASS), 0.f, 1.f);
+		auto dirtScal = glm::pow(scal, 2);
 		vert.color = glm::mix(colGrass, colGrassWet, humidScale);
 		vert.color = glm::mix(vert.color, colGrassShr, sharpScal);
-		vert.color = glm::mix(vert.color, colDirt, dirtScal);
+		vert.color = glm::mix(vert.color, colDirt1, dirtScal);
 	}
 }
 
@@ -527,12 +644,13 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 	chk->indices = mesh.size();
 }
 
+// ---------------------------- NOISE GENERATION --------------------------
 // [TODO:] seed consistency concern
-SimplexNoise hmapGen(  0.03f, 1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise mountGen( 0.02f, 1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise sharpGen( 0.01f, 1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise humidGen( 0.01f, 1.f, 2.f, 0.5f); // max -- 2
-SimplexNoise forestGen(0.1f,  1.f, 2.f, 0.5f); // max -- 2
+static SimplexNoise hmapGen;
+static SimplexNoise mountGen;
+static SimplexNoise sharpGen;
+static SimplexNoise humidGen;
+static SimplexNoise forestGen;
 // checks if a heightmap for the position has been generated, 
 // if not then generate it and make other threads trying to 
 // access that heightmap wait until its finished
@@ -560,9 +678,9 @@ BiomeChunk &setupBiome(Pos3i &curr) {
 		return bm;
 	}
 
-	LOG_INFO("Generating biomemaps...origin: %d %d, hash: %lu", 
-			chkCoord.x, chkCoord.z, key(chkCoord));
-	uint octaves = 5;
+	//LOG_INFO("Generating biomemaps...origin: %d %d, hash: %lu", 
+			//chkCoord.x, chkCoord.z, key(chkCoord));
+	uint octaves = 1;
 
 	// noise generation
 	for (int z = 0; z < bm.width; z++) {
@@ -621,11 +739,6 @@ BiomeChunk &setupBiome(Pos3i &curr) {
 	return bm;
 }
 
-void assignTreeMap(Pos3i &chkPos, BiomeChunk &bm, Chunk &chk) {
-	Pos3i cPos = chkPos * CHK_SIZE;
-	chk.treeMap = &bm.treeMap[Chunk::hasher(cPos)];
-}
-
 // generates 3D noise for use inside the chunk
 void genNoise(Pos3i &curr, Chunk *chk) {
 	uint octaves = 8;
@@ -675,7 +788,7 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 		// exponential scale of the noise y value, and the additional heightmap
 		auto mountn = bilinearInterp(m, relx, relz);
 
-		auto turbGen = SimplexNoise(0.33f, 1.f, 2.f, 0.5);
+		auto turbGen = SimplexNoise(0, 0.33f, 1.f, 2.f, 0.5);
 		for (int y = 0; y < NOISE_H; y++) {
 			//auto yscale = 0.1f + mountn * 1.5f;
 			// 3D noise generation
@@ -694,12 +807,13 @@ void genNoise(Pos3i &curr, Chunk *chk) {
 			}
 
 			auto turbulence = turbGen.noise(pos.x, pos.z) / 75.f;
-			noiseGen = SimplexNoise(0.012f, 1.f, 2.f, sharp);
+			noiseGen = SimplexNoise(SEED, 0.012f, 1.f, 2.f, sharp);
 			val += noiseGen.fractal(octaves, pos.x, pos.y / yscale, pos.z) + turbulence;
 			noise.at(x + z * NOISE_W + y * (NOISE_W * NOISE_W)) = val;
 		}
 	}}
 }
+// ------------------------------------------------------------------------
 
 GLuint bindMesh(Mesh &mesh) {
 	GLuint vbo;
@@ -708,81 +822,6 @@ GLuint bindMesh(Mesh &mesh) {
 	glBufferData(GL_ARRAY_BUFFER, mesh.size() * sizeof(Vertex),
          	(void*)mesh.data(), GL_STATIC_DRAW);
     return vbo;
-}
-
-// testing whether there is enough space for a tree
-bool testTreePlane(Pos3i &s, ChkNoise &density) {
-	for (int x : {-1, 0, 1, 2}) {
-	for (int z : {-1, 0, 1, 2}) {
-		for (int y : {0, 1}) {
-			Pos3i offset = {x, y, z};
-			offset = offset + s;
-			if (noiseAtPos(offset, density) < 0.0f) return false;
-		}
-		for (int y: {3}) {
-			Pos3i offset = {x, y, z};
-			offset = offset + s;
-			if (noiseAtPos(offset, density) > 0.f) return false;
-		}
-	}}
-	for (int x : {0, 1}) {
-	for (int z : {0, 1}) {
-		for (int y : {2}) {
-			Pos3i offset = {x, y, z};
-			offset = offset + s;
-			if (noiseAtPos(offset, density) < 0.0f) return false;
-		}
-	}}
-	return true;
-}
-
-// [TODO:] refactor this shit
-void placeTrees(Pos3i &cPos, Chunk *chk) {
-	auto &rd = rand;
-	auto &map = *chk->treeMap;
-
-	map.mtx.lock();
-	auto &vec = map.vec;
-	// select trees
-	auto iter = vec.begin();
-	while(iter != vec.end()) {
-		auto &t = *iter;
-		bool candidate = false;
-		int height = CHK_SIZE - 2;
-		Pos3i sample = {
-			int(glm::clamp(glm::floor(t[0]), 1.f, float(CHK_SIZE))),
-			height, 
-			int(glm::clamp(glm::floor(t[1]), 1.f, float(CHK_SIZE))),
-		};
-		while (height > 0 && candidate == false) {
-			height--;
-			sample.y = height;
-			candidate = testTreePlane(sample, *chk->noise);
-		}
-		if (candidate) {
-			if (height + cPos.y > LVL_SAND) {
-				// selecting one of the pregenerated models
-				auto &model = treemodels.at(rd() % treemodels.size());
-				// y rotation
-				float rotation = 2 * glm::pi<float>() * (rd() / float(RAND_MAX));
-				// skew : -pi/32 -> +pi/32 angle
-				float skew = glm::pi<float>() / 32.f + 
-					(glm::pi<float>() / 16.f) * (rd() / float(RAND_MAX));
-				auto position  = glm::vec3(cPos.x + t[0], height + 1 + cPos.y, cPos.z + t[1]);
-				Tree tree = {
-					.position 	= position,
-					.rotation 	= rotation,
-					.skew 		= skew,
-					.model  	= model
-				};
-				chk->trees.push_back(tree);
-			}
-			// erasing the position from the sample vector
-			iter = vec.erase(iter);
-		}
-		else iter++;
-	}
-	map.mtx.unlock();
 }
 
 // generates chunk data for the Chunk passed as an argument
@@ -796,6 +835,7 @@ void genChunk(Pos3i cPos, Chunk *chk) {
 	chk->state = JobState::awaiting;
 }
 
+// ---------------------------- PREGENERATION -----------------------------
 void pregenChunks(int dist = 8) {
 	boost::asio::thread_pool chPool(std::thread::hardware_concurrency());
 	for (int x = -dist; x <= dist; x++) {
@@ -828,15 +868,30 @@ void pregenTrees() {
     	tree.vbo = vbo;
 	}
 }
+// ------------------------------------------------------------------------
 
 void drawWater(ShaderProgram* sp) {
+	glDisable(GL_CULL_FACE);
 	glm::mat4 M = glm::mat4(1.f);
+	glm::mat4 V = glm::lookAt(camera.pos, camera.pos + camera.target, camera.up);
+	glm::mat4 P = glm::perspective(glm::radians(FOV), ASPECT_RATIO, Z_NEAR, Z_FAR);
 	M = glm::translate(M, {
 			camera.pos.x - (CHK_SIZE * RENDER_DIST), 
 			0, 
 			camera.pos.z - (CHK_SIZE * RENDER_DIST)
 			});
+
+	sp->use();
+
+	glUniform3fvARB(sp->u("skyColor"), 1, glm::value_ptr(skyColor));
+	glUniformMatrix4fv(sp->u("V"), 1, false, glm::value_ptr(V));
+	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
+
 	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
+	glUniform3fvARB(sp->u("cameraPos"), 1, glm::value_ptr(camera.pos));
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, m_depthTexture);
 
 	glBindVertexArray(vao);
 	glBindBuffer(GL_ARRAY_BUFFER, waterVBO);
@@ -856,7 +911,6 @@ void drawWater(ShaderProgram* sp) {
         	sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
 	glEnableVertexAttribArray(sp->a("color"));
 
-	//glDisable(GL_CULL_FACE);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 
 	glBindVertexArray(0);
@@ -879,27 +933,25 @@ void genWater() {
          	(void*)verts.data(), GL_STATIC_DRAW);
 }
 
-void drawTrees(vector<Tree> trees, ShaderProgram *sp) {
-	for (auto &tree : trees) {
-		glm::mat4 M = glm::mat4(1.f);
-		M = glm::translate(M, tree.position);
-		M = glm::rotate(M, tree.rotation, glm::vec3(0, 1, 0));
-		M = glm::rotate(M, tree.skew, glm::vec3(1, 0, 0));
-		drawVBO(tree.model.vbo, tree.model.indices, sp, M);
-	}
+// LAZY copies a depth buffer to the texture
+void copyDepthBuffer(GLuint texture) {
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, WINDOW_W, WINDOW_H, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, 0);
+	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, WINDOW_W, WINDOW_H);
 }
 
-void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
+void drawChunk(Chunk& chk, ShaderProgram *sp) {
+	glEnable(GL_CULL_FACE);
+	drawVBO(chk.vbo, chk.indices, sp);
+}
+
+void renderChunks(ShaderProgram *sp, ShaderProgram *sptree) {
 	sp->use();
-
-	//glEnable(GL_CULL_FACE);
-	glm::mat4 M = glm::mat4(1.f);
-	glm::mat4 V = glm::lookAt(camera.pos, camera.pos + camera.target, camera.up);
-	glm::mat4 P = glm::perspective(glm::radians(FOV), ASPECT_RATIO, Z_NEAR, Z_FAR);
-
-	glUniformMatrix4fv(sp->u("M"), 1, false, glm::value_ptr(M));
-	glUniformMatrix4fv(sp->u("V"), 1, false, glm::value_ptr(V));
-	glUniformMatrix4fv(sp->u("P"), 1, false, glm::value_ptr(P));
+	//glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
 	ImGui::Begin("DEBUG INFO");
 	ImGui::Text("x: %0.1f\ny: %0.1f\nz: %0.1f\n", 
@@ -908,7 +960,7 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 
 	// rendering or queueing creation of chunks
 	for (int x = -RENDER_DIST;   x <= RENDER_DIST;   x++) {
-	for (int y = -RENDER_DIST / 3; y <= RENDER_DIST / 3; y++) {
+	for (int y = -RENDER_DIST/3; y <= RENDER_DIST/3; y++) {
 	for (int z = -RENDER_DIST;   z <= RENDER_DIST;   z++) {
 		Pos3i cPos = {
 			.x = (currChkPos.x + x) * CHK_SIZE,
@@ -944,12 +996,13 @@ void renderChunks(GLFWwindow *window, ShaderProgram *sp) {
 				ImGui::Text("Height:    %.2f\n", chk.biome.avg(chk.biome.height));
 			}
 			// drawing a chunk
-			drawVBO(chk.vbo, chk.indices, sp); 
+			drawChunk(chk, sp);
 			// drawing the trees
-			drawTrees(chk.trees, sp);
+			drawTrees(chk.trees, sptree);
 		}
 	}}}
-    drawWater(sp);
+	// copy depth to a texture
+	copyDepthBuffer(m_depthTexture);
 	ImGui::End();
 }
 
@@ -995,31 +1048,64 @@ int main() {
 	ImGui_ImplOpenGL3_Init(glsl_version);
 
 	auto shaderDestroyer = [&](ShaderProgram* sp) {
-		array<GLuint, 1> buffers({vao});
-		glDeleteBuffers(buffers.size(), buffers.data());
-		
+		// freeing vao
+		glDeleteBuffers(1, &vao);
 		// freeing vbos on the gpu
 		vector<GLuint> vbos;
 		for (auto &chk : chunkMap) {
 			vbos.push_back(chk.second.vbo);
 		}
 		glDeleteBuffers(vbos.size(), vbos.data());
+		// freeing fbo
+		//glDeleteFramebuffers(1, &fbo);
 		delete sp;
 	};
-	// pointer to a ShaderProgram
-	Uniq_Ptr<ShaderProgram, decltype(shaderDestroyer)> sp(
-			initProgram(window.get()),
-			shaderDestroyer);
 
-	srand(0);
-	// pregenerating stuff
-	{
+	auto shaderDestoyer = [&](ShaderProgram* sp){delete sp;};
+	auto shaderCreate = [](const char* vert, const char* frag) {
+		ShaderProgram *sp = new ShaderProgram(vert, frag);
+		sp->use();
+		glUniform3fvARB(sp->u("skyColor"), 1, glm::value_ptr(skyColor));
+		glUniform1f(sp->u("far"), Z_FAR);
+		glUniform1f(sp->u("near"), Z_NEAR);
+		glUniform3fv(sp->u("sunDir"), 1, glm::value_ptr(
+					glm::normalize(glm::vec3(0, 1, -0.12))));
+		return sp;
+	};
+
+	// terrain shader
+	LOG_INFO("INITIALIZING TERRAIN SHADER");
+	Uniq_Ptr<ShaderProgram, decltype(shaderDestroyer)> spterr(
+			shaderCreate("glsl/vshad.glsl", "glsl/fshad.glsl"),
+			shaderDestroyer);
+	// water shader
+	LOG_INFO("INITIALIZING WATER SHADER");
+	Uniq_Ptr<ShaderProgram, decltype(shaderDestoyer)> spwater(
+			shaderCreate("glsl/vwater.glsl", "glsl/fwater.glsl"),
+			shaderDestoyer);
+	// tree shader
+	LOG_INFO("INITIALIZING TREE SHADER");
+	Uniq_Ptr<ShaderProgram, decltype(shaderDestoyer)> sptree(
+			shaderCreate("glsl/vtree.glsl", "glsl/ftree.glsl"),
+			shaderDestoyer);
+	initProgram(window.get());
+
+	srand(time(NULL));
+	{// noise generators initialisation
+		SEED = rand();
+		hmapGen  = SimplexNoise(rand(), 0.03f, 1.f, 2.f, 0.5f); // max -- 2
+		mountGen = SimplexNoise(rand(), 0.005f,1.4f,2.f, 0.5f); // max -- ?
+		sharpGen = SimplexNoise(rand(), 0.01f, 1.f, 2.f, 0.5f); // max -- 2
+		humidGen = SimplexNoise(rand(), 0.01f, 1.f, 2.f, 0.5f); // max -- 2
+		forestGen= SimplexNoise(rand(), 0.1f,  1.f, 2.f, 0.5f); // max -- 2
+	}
+	{// generating things before rendering
 		genWater();
     	pregenTrees();
     	LOG_INFO("Done generating trees!");
     	// waiting for chunk generation to complete
     	LOG_INFO("Map pre-generation...");
-    	pregenChunks(16);
+    	pregenChunks(24);
     	LOG_INFO("Done generating chunks!");
     }
 	// main loop
@@ -1036,7 +1122,8 @@ int main() {
     	ImGui_ImplGlfw_NewFrame();
     	ImGui::NewFrame();
 
-    	renderChunks(window.get(), sp.get());
+    	renderChunks(spterr.get(), sptree.get());
+    	drawWater(spwater.get());
 
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

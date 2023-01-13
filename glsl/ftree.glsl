@@ -14,7 +14,7 @@ const vec3 lightColor = vec3(0.6, 0.6, 0.5);
 const float screenGamma = 2.2; // Assume the monitor is calibrated to the sRGB color space
 
 void main() {
-	vec3 ambient = lightColor * 0.1;
+	vec3 ambient = lightColor * 0.6;
 	vec3 normal = normalize(iNormal);
 
 	//vec3 sunDir = lightPos - vertPos;
