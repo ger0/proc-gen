@@ -1,5 +1,5 @@
-[submodule "submodules/SimplexNoise"]
-	path = submodules/SimplexNoise
+[submodule "submodules/SimplexNoiseSeeded"]
+	path = submodules/SimplexNoiseSeeded
 	url = https://github.com/akriegman/SimplexNoise
 [submodule "submodules/poisson-disk-sampling"]
 	path = submodules/poisson-disk-sampling

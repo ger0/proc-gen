@@ -671,7 +671,6 @@ void genMesh(Pos3i &curr, Chunk* chk) {
 }
 
 // ---------------------------- NOISE GENERATION --------------------------
-// [TODO:] seed consistency concern
 static SimplexNoise hmapGen;
 static SimplexNoise mountGen;
 static SimplexNoise sharpGen;
@@ -706,7 +705,7 @@ BiomeChunk &setupBiome(Pos3i &curr) {
 
 	//LOG_INFO("Generating biomemaps...origin: %d %d, hash: %lu", 
 			//chkCoord.x, chkCoord.z, key(chkCoord));
-	uint octaves = 1;
+	uint octaves = 4;
 
 	// noise generation
 	for (int z = 0; z < bm.width; z++) {
@@ -719,13 +718,13 @@ BiomeChunk &setupBiome(Pos3i &curr) {
 		bm.at(bm.mountain, x, z) = mval;
 
 		auto sval = sharpGen.fractal(octaves, offset.x, offset.z);
-		sval = glm::clamp((sval + 2.f) / 14.f + 0.25f, MIN_SHARP, MAX_SHARP);
+		sval = glm::clamp((sval + 2.f) / 12.f + 0.25f, MIN_SHARP, MAX_SHARP);
 		bm.at(bm.sharp, x, z) = sval;
 
 		// (-0.833; 1.833)
 		auto hghval = hmapGen.fractal(octaves, offset.x, offset.z);
 		hghval = 0.5f + hghval / 1.5f;
-		hghval = glm::clamp(float(glm::exp(hghval / 1.2) - 1), MIN_HEIGH, MAX_HEIGH);
+		hghval = glm::clamp(float(glm::exp(hghval) - 1), MIN_HEIGH, MAX_HEIGH);
 		bm.at(bm.height, x, z) = hghval;
 
 		auto humval = humidGen.fractal(octaves, offset.x, offset.z);
@@ -1121,11 +1120,11 @@ int main() {
 	srand(time(NULL));
 	{// noise generators initialisation
 		SEED = rand();
-		hmapGen  = SimplexNoise(rand(), 0.03f, 1.f, 2.f, 0.5f); // max -- 2
-		mountGen = SimplexNoise(rand(), 0.005f,1.4f,2.f, 0.5f); // max -- ?
-		sharpGen = SimplexNoise(rand(), 0.01f, 1.f, 2.f, 0.5f); // max -- 2
-		humidGen = SimplexNoise(rand(), 0.01f, 1.f, 2.f, 0.5f); // max -- 2
-		forestGen= SimplexNoise(rand(), 0.1f,  1.f, 2.f, 0.5f); // max -- 2
+		hmapGen  = SimplexNoise((rand() * 11) % RAND_MAX, 0.02f, 1.0f, 2.f, 0.5f); // max -- 2
+		mountGen = SimplexNoise((rand() * 17) % RAND_MAX, 0.05f, 1.4f,2.f, 0.5f);  // max -- ?
+		sharpGen = SimplexNoise((rand() * 23) % RAND_MAX, 0.02f, 1.f, 2.f, 0.5f);  // max -- 2
+		humidGen = SimplexNoise((rand() * 37) % RAND_MAX, 0.01f, 1.f, 2.f, 0.5f);  // max -- 2
+		forestGen= SimplexNoise((rand() * 71) % RAND_MAX, 0.1f,  1.f, 2.f, 0.5f);  // max -- 2
 	}
 	{// generating things before rendering
 		genWater();
