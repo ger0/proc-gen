@@ -10,7 +10,6 @@
 
 #include <thread>
 #include <mutex>
-#include <condition_variable>
 
 #include <vector>
 #include <array>
@@ -93,6 +92,7 @@ using SmoothMap = array<float, NOISE_W * NOISE_W>;
 
 // render distance
 constexpr int RENDER_DIST = 8;
+constexpr int RENDER_RADIUS = RENDER_DIST * RENDER_DIST;
 constexpr float Z_NEAR = 0.1f;
 constexpr float Z_FAR = (RENDER_DIST + 3) * CHK_SIZE;
 
@@ -225,8 +225,8 @@ struct Chunk {
 		ChkHash y = glm::floor(pos.y / CHK_SIZE);
 		ChkHash z = glm::floor(pos.z / CHK_SIZE);
 		x = x << 0;
-		z = z << 16;
-		y = y << 32;
+		z = z << 21;
+		y = y << 42;
 		return x + y + z;
 	};
 };
@@ -705,7 +705,7 @@ BiomeChunk &setupBiome(Pos3i &curr) {
 
 	//LOG_INFO("Generating biomemaps...origin: %d %d, hash: %lu", 
 			//chkCoord.x, chkCoord.z, key(chkCoord));
-	uint octaves = 4;
+	uint octaves = 1;
 
 	// noise generation
 	for (int z = 0; z < bm.width; z++) {
@@ -987,6 +987,8 @@ void renderChunks(ShaderProgram *sp, ShaderProgram *sptree) {
 	for (int x = -RENDER_DIST;   x <= RENDER_DIST;   x++) {
 	for (int y = -RENDER_DIST/3; y <= RENDER_DIST/3; y++) {
 	for (int z = -RENDER_DIST;   z <= RENDER_DIST;   z++) {
+		// skip generation if outside the rendering circle
+		if (x*x + y*y + z*z > RENDER_RADIUS) continue;
 		Pos3i cPos = {
 			.x = (currChkPos.x + x) * CHK_SIZE,
 			.y = (currChkPos.y + y) * CHK_SIZE,
@@ -1031,7 +1033,14 @@ void renderChunks(ShaderProgram *sp, ShaderProgram *sptree) {
 	ImGui::End();
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+	srand(time(NULL));
+	if (argc == 2) {
+		SEED = strtoul(argv[1], NULL, 10);
+		LOG_INFO("SEED: %u", SEED);
+	} else {
+		SEED = rand();
+	}
 	glfwSetErrorCallback(errCallback);
 	if (!glfwInit()) {
 		glfwTerminate();
@@ -1044,6 +1053,20 @@ int main() {
 
 	// RAII, this might be overdone here but it still works 
 	auto windowDestroyer = [&](GLFWwindow* window) {
+		// freeing vao
+		glDeleteBuffers(1, &vao);
+		// freeing vbos on the gpu
+		vector<GLuint> vbos;
+		for (auto &chk : chunkMap) {
+			vbos.push_back(chk.second.vbo);
+		}
+		for (auto &model : treemodels) {
+			vbos.push_back(model.vbo);
+		}
+		glDeleteBuffers(vbos.size(), vbos.data());
+		// freeing fbo
+		//glDeleteFramebuffers(1, &fbo);
+
 		glfwDestroyWindow(window);
 		glfwTerminate();
 	};
@@ -1073,17 +1096,6 @@ int main() {
 	ImGui_ImplOpenGL3_Init(glsl_version);
 
 	auto shaderDestroyer = [&](ShaderProgram* sp) {
-		// freeing vao
-		glDeleteBuffers(1, &vao);
-		// freeing vbos on the gpu
-		vector<GLuint> vbos;
-		for (auto &chk : chunkMap) {
-			vbos.push_back(chk.second.vbo);
-		}
-		glDeleteBuffers(vbos.size(), vbos.data());
-		// freeing fbo
-		//glDeleteFramebuffers(1, &fbo);
-		delete sp;
 	};
 
 	auto shaderDestoyer = [&](ShaderProgram* sp){delete sp;};
@@ -1117,14 +1129,12 @@ int main() {
 			shaderDestoyer);
 	initProgram(window.get());
 
-	srand(time(NULL));
 	{// noise generators initialisation
-		SEED = rand();
-		hmapGen  = SimplexNoise((rand() * 11) % RAND_MAX, 0.02f, 1.0f, 2.f, 0.5f); // max -- 2
-		mountGen = SimplexNoise((rand() * 17) % RAND_MAX, 0.05f, 1.4f,2.f, 0.5f);  // max -- ?
-		sharpGen = SimplexNoise((rand() * 23) % RAND_MAX, 0.02f, 1.f, 2.f, 0.5f);  // max -- 2
-		humidGen = SimplexNoise((rand() * 37) % RAND_MAX, 0.01f, 1.f, 2.f, 0.5f);  // max -- 2
-		forestGen= SimplexNoise((rand() * 71) % RAND_MAX, 0.1f,  1.f, 2.f, 0.5f);  // max -- 2
+		hmapGen  = SimplexNoise((SEED * 11) % UINT_MAX, 0.02f, 1.0f,2.f, 0.5f);
+		mountGen = SimplexNoise((SEED * 17) % UINT_MAX, 0.05f, 1.4f,2.f, 0.5f);
+		sharpGen = SimplexNoise((SEED * 23) % UINT_MAX, 0.02f, 1.f, 2.f, 0.5f);
+		humidGen = SimplexNoise((SEED * 37) % UINT_MAX, 0.01f, 1.f, 2.f, 0.5f);
+		forestGen= SimplexNoise((SEED * 71) % UINT_MAX, 0.1f,  1.f, 2.f, 0.5f);
 	}
 	{// generating things before rendering
 		genWater();
@@ -1132,8 +1142,8 @@ int main() {
     	LOG_INFO("Done generating trees!");
     	// waiting for chunk generation to complete
     	LOG_INFO("Map pre-generation...");
-    	pregenChunks(12);
-    	LOG_INFO("Done generating chunks!");
+    	//pregenChunks(12);
+    	//LOG_INFO("Done generating chunks!");
     }
 	// main loop
 	while (!glfwWindowShouldClose(window.get())) {
