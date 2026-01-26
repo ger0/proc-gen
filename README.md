@@ -1,6 +1,8 @@
-# Procedurally generated terrain prototype
-Procedurally generated terrain with biomes and procedurally generated vegetation
+# 3D Voxel terrain generator with biomes and procedurally generated vegetation prototype
+Procedurally generated voxel terrain with biomes and procedurally generated vegetation
 preview video: https://www.youtube.com/embed/Jlw-HjFgFK4
+Voxel terrain allows for overhangs and more horizontal landscape features than a simple heightmap.
+
 
 <img src="https://github.com/ger0/external_repository/blob/main/pics/procgen/lakes.png" width="720"/>
 <img src="https://github.com/ger0/external_repository/blob/main/pics/procgen/mountains.png" width="720"/>
